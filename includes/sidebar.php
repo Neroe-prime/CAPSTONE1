@@ -31,7 +31,7 @@ $role = $_SESSION['role'] ?? 'Teacher'; // Default to lowest privilege if not se
     
     <!-- Only Admin can see Settings -->
     <?php if ($role === 'Admin'): ?>
-    <a href="#">
+    <a href="../../modules/settings/index.php">
         <i class="fa-solid fa-gear"></i> Settings
     </a>
     <?php endif; ?>

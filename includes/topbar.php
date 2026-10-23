@@ -1,17 +1,13 @@
 <?php
-// Fetch active low stock alerts and EARS alerts for the notification center
 $notif_inventory = [];
 $notif_count = 0;
 
 if (isset($pdo)) {
     try {
-        // Get items at or below reorder level
         $inv_stmt = $pdo->query("SELECT item_name, current_stock, reorder_level FROM inventory WHERE current_stock <= reorder_level LIMIT 3");
         $notif_inventory = $inv_stmt->fetchAll(PDO::FETCH_ASSOC);
         $notif_count += count($notif_inventory);
-    } catch (Exception $e) {
-        // Table might not have data yet, ignore safely
-    }
+    } catch (Exception $e) {}
 }
 ?>
 <div class="top-navbar d-flex justify-content-between align-items-center">
@@ -21,7 +17,7 @@ if (isset($pdo)) {
     </form>
     
     <div class="d-flex align-items-center gap-3">
-        <!-- Dynamic Notification Bell Dropdown -->
+        <!-- Notification Dropdown -->
         <div class="dropdown">
             <button class="btn position-relative dropdown-toggle hide-arrow" type="button" id="notifDropdown" data-bs-toggle="dropdown" aria-expanded="false" style="border: none; background: transparent;">
                 <i class="fa-regular fa-bell fs-5 text-secondary"></i>
@@ -35,7 +31,6 @@ if (isset($pdo)) {
                 <li><h6 class="dropdown-header fw-bold text-dark">System Notifications</h6></li>
                 <li><hr class="dropdown-divider my-1"></li>
                 
-                <!-- Static EARS Outbreak Alert -->
                 <li>
                     <a class="dropdown-item py-2 text-wrap" href="../../modules/analytics/index.php">
                         <div class="d-flex align-items-start">
@@ -50,7 +45,6 @@ if (isset($pdo)) {
                 
                 <li><hr class="dropdown-divider my-1"></li>
                 
-                <!-- Dynamic Inventory Stock-out Alerts -->
                 <?php if (!empty($notif_inventory)): ?>
                     <?php foreach ($notif_inventory as $inv): ?>
                         <li>
@@ -71,7 +65,7 @@ if (isset($pdo)) {
             </ul>
         </div>
         
-        <!-- Dynamic Profile Dropdown -->
+        <!-- Profile Dropdown -->
         <div class="dropdown">
             <a href="#" class="d-flex align-items-center gap-2 text-decoration-none dropdown-toggle text-dark" id="profileDropdown" data-bs-toggle="dropdown" aria-expanded="false">
                 <img src="https://ui-avatars.com/api/?name=<?php echo urlencode($_SESSION['username'] ?? 'User'); ?>&background=3498db&color=fff" alt="Profile" class="rounded-circle" width="40">

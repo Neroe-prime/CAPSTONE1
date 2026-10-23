@@ -3,27 +3,19 @@ ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 session_start();
-if(!isset($_SESSION['user_id'])){
-    header("Location: ../../index.php?error=Please log in first");
+if (!isset($_SESSION['user_id'])) {
+    header("Location: ../../index.php");
     exit();
 }
 require_once '../../includes/db_connect.php';
 
-// Handle Form Submission for Adding a New Student
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_student'])) {
-    $student_id = trim($_POST['student_id']);
-    $first_name = trim($_POST['first_name']);
-    $last_name = trim($_POST['last_name']);
-    $grade_section = trim($_POST['grade_section']);
-    $medical_history = trim($_POST['medical_history']);
-
-    try {
-        $stmt = $pdo->prepare("INSERT INTO students (student_id, first_name, last_name, grade_section, medical_history) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$student_id, $first_name, $last_name, $grade_section, $medical_history]);
-        $success_msg = "Student successfully added!";
-    } catch (PDOException $e) {
-        $error_msg = "Error: " . $e->getMessage();
-    }
+// Fetch current user role for RBAC
+try {
+    $role_stmt = $pdo->prepare("SELECT role FROM users WHERE user_id = ?");
+    $role_stmt->execute([$_SESSION['user_id']]);
+    $user_role = $role_stmt->fetchColumn();
+} catch (PDOException $e) {
+    $user_role = 'Teacher';
 }
 ?>
 <!DOCTYPE html>
@@ -35,136 +27,129 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_student'])) {
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        body { background-color: #f0f4f8; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
-        
-        /* Sidebar Styles */
+        body { background-color: #f4f5fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
         .sidebar { width: 250px; height: 100vh; background-color: #1a252f; color: #ecf0f1; position: fixed; padding-top: 20px; top: 0; left: 0; z-index: 1000; }
         .sidebar .brand { font-size: 1.5rem; font-weight: bold; text-align: center; margin-bottom: 30px; color: #3498db; }
         .sidebar a { padding: 15px 25px; text-decoration: none; font-size: 1.1rem; color: #bdc3c7; display: block; transition: 0.3s; }
         .sidebar a:hover, .sidebar a.active { color: #ffffff; background-color: #2c3e50; border-left: 4px solid #3498db; }
-        .sidebar a i { margin-right: 10px; width: 20px; text-align: center; }
+        .main-content { margin-left: 250px; padding: 45px; width: calc(100% - 250px); }
+        .card { border: none; border-radius: 20px; box-shadow: 0 8px 25px rgba(111, 66, 193, 0.07); background-color: #ffffff; }
+        .bg-gradient-purple { background: linear-gradient(135deg, #6f42c1 0%, #4e73df 100%); color: white; border-radius: 20px; }
+        .table { border-collapse: separate; border-spacing: 0 10px; margin-top: -10px; }
+        .table thead th { background-color: transparent; color: #6c757d; font-weight: 700; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; border-bottom: 2px solid #eaedf2; padding: 15px 20px; }
+        .table tbody tr { background-color: #ffffff; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.02); }
+        .table tbody td { padding: 18px 20px; color: #2d3748; vertical-align: middle; font-size: 0.95rem; border-top: 1px solid #f1f3f8; border-bottom: 1px solid #f1f3f8; }
+        .table tbody td:first-child { border-left: 1px solid #f1f3f8; border-top-left-radius: 12px; border-bottom-left-radius: 12px; }
+        .table tbody td:last-child { border-right: 1px solid #f1f3f8; border-top-right-radius: 12px; border-bottom-right-radius: 12px; }
         
-        /* Main Content Styles */
-        .main-content { margin-left: 250px; padding: 20px; width: calc(100% - 250px); }
-        .top-navbar { background-color: #ffffff; border-radius: 8px; padding: 10px 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.04); margin-bottom: 24px; }
-        .card { border: none; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .btn-action-view { background-color: #ebf8ff; color: #3182ce; border: none; border-radius: 10px; transition: all 0.2s; }
+        .btn-action-view:hover { background-color: #3182ce; color: white; }
+        .btn-action-edit { background-color: #fefcbf; color: #d69e2e; border: none; border-radius: 10px; transition: all 0.2s; }
+        .btn-action-edit:hover { background-color: #d69e2e; color: white; }
+        .btn-action-delete { background-color: #fff5f5; color: #e53e3e; border: none; border-radius: 10px; transition: all 0.2s; }
+        .btn-action-delete:hover { background-color: #e53e3e; color: white; }
     </style>
 </head>
 <body>
-
-    <!-- INJECT SIDEBAR -->
     <?php include '../../includes/sidebar.php'; ?>
-
     <div class="main-content">
-        <!-- INJECT TOPBAR -->
         <?php include '../../includes/topbar.php'; ?>
 
-        <div class="d-flex justify-content-between align-items-center mb-4">
-            <h4 class="fw-bold m-0">Student Health Records</h4>
-            <button class="btn btn-primary fw-semibold" data-bs-toggle="modal" data-bs-target="#addStudentModal">
-                <i class="fa-solid fa-plus me-2"></i> Register Student
-            </button>
+        <!-- Header Banner -->
+        <div class="card bg-gradient-purple p-5 mb-5 shadow-sm mt-3">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h2 class="fw-bold mb-2 text-white"><i class="fa-solid fa-user-injured me-3"></i> Student Health Records</h2>
+                    <p class="text-white-50 fs-6 mb-0">Manage registered student profiles, medical histories, and clinical records smoothly.</p>
+                </div>
+                <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
+                    <a href="register.php" class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill">
+                        <i class="fa-solid fa-user-plus me-2"></i> Register Student
+                    </a>
+                <?php else: ?>
+                    <span class="badge bg-light text-dark px-4 py-3 rounded-pill fw-semibold shadow-sm">
+                        <i class="fa-solid fa-eye me-2 text-primary"></i> View-Only Access
+                    </span>
+                <?php endif; ?>
+            </div>
         </div>
 
-        <?php if(isset($success_msg)): ?>
-            <div class="alert alert-success alert-dismissible fade show" role="alert">
-                <i class="fa-solid fa-check-circle me-2"></i> <?php echo $success_msg; ?>
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-        <?php endif; ?>
-        
-        <?php if(isset($error_msg)): ?>
-            <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                <i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo $error_msg; ?>
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        <?php if (isset($_GET['success'])): ?>
+            <div class="alert alert-success shadow-sm border-0 rounded-4 p-4 mb-4">
+                <i class="fa-solid fa-circle-check me-2"></i> <?php echo htmlspecialchars($_GET['success']); ?>
             </div>
         <?php endif; ?>
 
-        <!-- Student Data Table -->
+        <?php if (isset($_GET['error'])): ?>
+            <div class="alert alert-danger shadow-sm border-0 rounded-4 p-4 mb-4">
+                <i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo htmlspecialchars($_GET['error']); ?>
+            </div>
+        <?php endif; ?>
+
+        <!-- Students Table Card -->
         <div class="card p-4">
             <div class="table-responsive">
-                <table class="table table-hover align-middle">
-                    <thead class="table-light">
+                <table class="table align-middle mb-0">
+                    <thead>
                         <tr>
-                            <th>Student ID</th>
+                            <th class="ps-4">Student ID</th>
                             <th>Full Name</th>
                             <th>Grade / Section</th>
                             <th>Medical History / Allergies</th>
                             <th>Date Registered</th>
-                            <th>Action</th>
+                            <th class="text-end pe-4">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php
-                        $stmt = $pdo->query("SELECT * FROM students ORDER BY created_at DESC");
-                        if ($stmt->rowCount() > 0) {
-                            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                                $date = date('M d, Y', strtotime($row['created_at']));
-                                echo "<tr>";
-                                echo "<td><span class='badge bg-light text-dark border'>{$row['student_id']}</span></td>";
-                                echo "<td><strong>" . htmlspecialchars($row['first_name'] . ' ' . $row['last_name']) . "</strong></td>";
-                                echo "<td>" . htmlspecialchars($row['grade_section']) . "</td>";
-                                echo "<td><small class='text-muted'>" . htmlspecialchars($row['medical_history'] ? $row['medical_history'] : 'None') . "</small></td>";
-                                echo "<td>{$date}</td>";
-                                echo "<td>
-                                        <button class='btn btn-sm btn-outline-primary'><i class='fa-solid fa-eye'></i> View</button>
-                                      </td>";
-                                echo "</tr>";
+                        try {
+                            $stmt = $pdo->query("SELECT * FROM students ORDER BY student_id DESC");
+                            if ($stmt->rowCount() > 0) {
+                                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                                    $reg_date = !empty($row['created_at']) ? date('M d, Y', strtotime($row['created_at'])) : 'Oct 22, 2026';
+                                    
+                                    echo "<tr>";
+                                    echo "<td class='ps-4'><span class='badge bg-purple bg-opacity-10 text-purple border px-3 py-2 rounded-pill fw-semibold' style='background-color: #f3f0ff !important; color: #6f42c1 !important;'>#" . htmlspecialchars($row['student_id']) . "</span></td>";
+                                    echo "<td><strong class='text-dark fs-6'>" . htmlspecialchars($row['first_name'] . ' ' . $row['last_name']) . "</strong></td>";
+                                    echo "<td><span class='badge bg-info bg-opacity-10 text-info px-3 py-2 rounded-pill'>" . htmlspecialchars($row['grade_section']) . "</span></td>";
+                                    echo "<td><span class='badge bg-danger bg-opacity-10 text-danger px-3 py-2 rounded-pill'>" . htmlspecialchars($row['medical_history'] ?: 'None') . "</span></td>";
+                                    echo "<td class='text-muted'>" . $reg_date . "</td>";
+                                    
+                                    echo "<td class='text-end pe-4'>
+                                            <div class='d-flex justify-content-end gap-2'>
+                                                <a href='view.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-action-view px-3 py-2' title='View Profile'>
+                                                    <i class='fa-solid fa-eye'></i>
+                                                </a>";
+                                                
+                                    if ($user_role === 'Admin' || $user_role === 'Nurse') {
+                                        echo "<a href='edit.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Edit Record'>
+                                                <i class='fa-solid fa-pen-to-square'></i>
+                                              </a>
+                                              <a href='delete.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Record' onclick='return confirm(\"Are you sure you want to delete this student record?\");'>
+                                                <i class='fa-solid fa-trash'></i>
+                                              </a>";
+                                    }
+                                    
+                                    echo "</div>
+                                         </td>";
+                                    echo "</tr>";
+                                }
+                            } else {
+                                $colspan = ($user_role === 'Admin' || $user_role === 'Nurse') ? 6 : 5;
+                                echo "<tr><td colspan='{$colspan}' class='text-center text-muted py-5'>
+                                        <i class='fa-solid fa-user-slash fa-3x mb-3 text-secondary opacity-25'></i>
+                                        <p class='mb-0 fw-medium'>No student health records found.</p>
+                                      </td></tr>";
                             }
-                        } else {
-                            echo "<tr><td colspan='6' class='text-center py-4 text-muted'>No students registered yet.</td></tr>";
+                        } catch (PDOException $e) {
+                            echo "<tr><td colspan='6' class='text-center text-danger py-4'>Error loading student records.</td></tr>";
                         }
                         ?>
                     </tbody>
                 </table>
             </div>
         </div>
-
     </div>
-
-    <!-- ADD STUDENT MODAL -->
-    <div class="modal fade" id="addStudentModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header border-0">
-                    <h5 class="modal-title fw-bold">Register New Student</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <form action="" method="POST">
-                    <div class="modal-body">
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">Student ID (e.g., 2026-001)</label>
-                            <input type="text" name="student_id" class="form-control" required>
-                        </div>
-                        <div class="row">
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label fw-semibold">First Name</label>
-                                <input type="text" name="first_name" class="form-control" required>
-                            </div>
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label fw-semibold">Last Name</label>
-                                <input type="text" name="last_name" class="form-control" required>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">Grade & Section</label>
-                            <input type="text" name="grade_section" class="form-control" placeholder="e.g., Grade 10 - Rizal" required>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">Medical History / Allergies</label>
-                            <textarea name="medical_history" class="form-control" rows="3" placeholder="Asthma, allergic to penicillin, etc. (Leave blank if none)"></textarea>
-                        </div>
-                    </div>
-                    <div class="modal-footer border-0">
-                        <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" name="add_student" class="btn btn-primary">Save Profile</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- INJECT FOOTER -->
     <?php include '../../includes/footer.php'; ?>
 </body>
 </html>
