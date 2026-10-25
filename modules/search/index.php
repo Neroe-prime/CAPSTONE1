@@ -69,7 +69,8 @@ $search_query = isset($_GET['q']) ? trim($_GET['q']) : '';
                                     echo "<td><strong>" . htmlspecialchars($row['first_name'] . ' ' . $row['last_name']) . "</strong></td>";
                                     echo "<td>" . htmlspecialchars($row['grade_section']) . "</td>";
                                     echo "<td><small class='text-muted'>" . htmlspecialchars($row['medical_history'] ?: 'None') . "</small></td>";
-                                    echo "<td><a href='../records/index.php' class='btn btn-sm btn-outline-primary'><i class='fa-solid fa-eye'></i> View in Records</a></td>";
+                                    // Fixed link to point directly to the student's individual view profile page
+                                    echo "<td><a href='../records/view.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-outline-primary'><i class='fa-solid fa-eye'></i> View Profile</a></td>";
                                     echo "</tr>";
                                 }
                             } else {
@@ -87,4 +88,4 @@ $search_query = isset($_GET['q']) ? trim($_GET['q']) : '';
 
     <?php include '../../includes/footer.php'; ?>
 </body>
-</html> 
+</html>

@@ -33,9 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
 
-        // 3. Hash password and insert new user
+        // 3. Hash password and insert new user (Using password_hash column)
         $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        $insert_stmt = $pdo->prepare("INSERT INTO users (username, password, role) VALUES (?, ?, ?)");
+        $insert_stmt = $pdo->prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)");
         $insert_stmt->execute([$username, $hashed_password, $role]);
 
         header("Location: index.php?success=User account created successfully");

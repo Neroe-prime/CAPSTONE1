@@ -114,6 +114,13 @@ if ($current_user['role'] === 'Admin') {
             border-top-right-radius: 12px;
             border-bottom-right-radius: 12px;
         }
+
+        /* Action Buttons */
+        .btn-action-edit { background-color: #fefcbf; color: #d69e2e; border: none; border-radius: 10px; transition: all 0.2s; }
+        .btn-action-edit:hover { background-color: #d69e2e; color: white; }
+        
+        .btn-action-delete { background-color: #fff5f5; color: #e53e3e; border: none; border-radius: 10px; transition: all 0.2s; }
+        .btn-action-delete:hover { background-color: #e53e3e; color: white; }
     </style>
 </head>
 <body>
@@ -224,7 +231,7 @@ if ($current_user['role'] === 'Admin') {
                                 </form>
                             </div>
 
-                            <!-- Manage Users Tab (Admin Only) -->
+                            <!-- Manage Users Tab (Admin Only with CRUD) -->
                             <?php if ($current_user['role'] === 'Admin'): ?>
                             <div class="tab-pane fade" id="users" role="tabpanel" aria-labelledby="users-tab">
                                 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -239,7 +246,8 @@ if ($current_user['role'] === 'Admin') {
                                             <tr>
                                                 <th class="ps-3">ID</th>
                                                 <th>Username</th>
-                                                <th class="text-end pe-3">Role</th>
+                                                <th>Role</th>
+                                                <th class="text-end pe-3">Actions</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -247,10 +255,22 @@ if ($current_user['role'] === 'Admin') {
                                             <tr>
                                                 <td class="ps-3"><span class="badge bg-light text-dark border px-2 py-1">#<?php echo $u['user_id']; ?></span></td>
                                                 <td><strong class="text-dark"><?php echo htmlspecialchars($u['username']); ?></strong></td>
-                                                <td class="text-end pe-3">
+                                                <td>
                                                     <span class="badge <?php echo $u['role'] === 'Admin' ? 'bg-danger bg-opacity-10 text-danger border border-danger-subtle' : ($u['role'] === 'Nurse' ? 'bg-success bg-opacity-10 text-success border border-success-subtle' : 'bg-secondary bg-opacity-10 text-secondary border border-secondary-subtle'); ?> px-3 py-2 rounded-pill fw-semibold">
                                                         <?php echo htmlspecialchars($u['role']); ?>
                                                     </span>
+                                                </td>
+                                                <td class="text-end pe-3">
+                                                    <div class="d-flex justify-content-end gap-2">
+                                                        <a href="edit_user.php?id=<?php echo $u['user_id']; ?>" class="btn btn-sm btn-action-edit px-3 py-2" title="Edit User">
+                                                            <i class="fa-solid fa-pen-to-square"></i>
+                                                        </a>
+                                                        <?php if ($u['user_id'] != $_SESSION['user_id']): ?>
+                                                            <a href="delete_user.php?id=<?php echo $u['user_id']; ?>" class="btn btn-sm btn-action-delete px-3 py-2" title="Delete User" onclick="return confirm('Are you sure you want to delete this user account?');">
+                                                                <i class="fa-solid fa-trash"></i>
+                                                            </a>
+                                                        <?php endif; ?>
+                                                    </div>
                                                 </td>
                                             </tr>
                                             <?php endforeach; ?>

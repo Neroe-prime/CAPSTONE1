@@ -1,38 +1,37 @@
 <?php
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
+
 session_start();
 require_once 'includes/db_connect.php';
 
-// If already logged in, send them straight to the dashboard
-if(isset($_SESSION['user_id'])){
-    header("Location: modules/dashboard/index.php");
-    exit();
-}
+$error_msg = '';
 
-$error = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $username = trim($_POST['username'] ?? '');
+    $password = $_POST['password'] ?? '';
 
-if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['login'])) {
-    $username = trim($_POST['username']);
-    $password = $_POST['password'];
+    if (empty($username) || empty($password)) {
+        $error_msg = "Please enter both username and password.";
+    } else {
+        try {
+            $stmt = $pdo->prepare("SELECT user_id, username, password_hash, role FROM users WHERE username = ?");
+            $stmt->execute([$username]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    try {
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
-        $stmt->execute([$username]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($user && password_verify($password, $user['password_hash'])) {
+                $_SESSION['user_id'] = $user['user_id'];
+                $_SESSION['username'] = $user['username'];
+                $_SESSION['role'] = $user['role'];
 
-        // Verify password using the correct 'password_hash' column
-        if ($user && password_verify($password, $user['password_hash'])) {
-            // Set Session Variables using the correct 'user_id' column
-            $_SESSION['user_id'] = $user['user_id']; 
-            $_SESSION['username'] = $user['username'];
-            $_SESSION['role'] = $user['role'];
-
-            header("Location: modules/dashboard/index.php");
-            exit();
-        } else {
-            $error = "Invalid username or password.";
+                header("Location: modules/dashboard/index.php");
+                exit();
+            } else {
+                $error_msg = "Invalid username or password.";
+            }
+        } catch (PDOException $e) {
+            $error_msg = "Database error: " . $e->getMessage();
         }
-    } catch (PDOException $e) {
-        $error = "System error: " . $e->getMessage();
     }
 }
 ?>
@@ -41,50 +40,131 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['login'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MedFlow - Login</title>
+    <title>Login - MedFlow</title>
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+    
     <style>
-        body { background-color: #1a252f; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .login-card { background: #fff; padding: 40px; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
-        .brand { font-size: 2rem; font-weight: bold; text-align: center; margin-bottom: 30px; color: #3498db; }
+        body {
+            background-color: #f4f5fa;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            width: 100%;
+            max-width: 420px;
+            border: none;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(111, 66, 193, 0.08);
+            background-color: #ffffff;
+            padding: 40px;
+        }
+        .btn-purple {
+            background: linear-gradient(135deg, #6f42c1 0%, #4e73df 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px;
+            font-weight: 600;
+        }
+        .btn-purple:hover {
+            background: linear-gradient(135deg, #5e35b1 0%, #3b5998 100%);
+            color: white;
+        }
+        /* Clean unified input group styling */
+        .input-group {
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #e2e8f0;
+            background-color: #f8fafc;
+        }
+        .input-group:focus-within {
+            background-color: #ffffff;
+            border-color: #6f42c1;
+            box-shadow: 0 0 0 4px rgba(111, 66, 193, 0.1);
+        }
+        .input-group .form-control {
+            background-color: transparent;
+            border: none;
+            padding: 12px;
+            box-shadow: none !important;
+        }
+        .input-group .input-group-text {
+            background-color: transparent;
+            border: none;
+            color: #718096;
+            padding-left: 15px;
+            padding-right: 15px;
+        }
     </style>
 </head>
 <body>
 
-    <div class="login-card">
-        <div class="brand">
-            <i class="fa-solid fa-heart-pulse"></i> MedFlow
-        </div>
-        
-        <?php if($error): ?>
-            <div class="alert alert-danger py-2"><?php echo $error; ?></div>
-        <?php endif; ?>
-        <?php if(isset($_GET['error'])): ?>
-            <div class="alert alert-warning py-2"><?php echo htmlspecialchars($_GET['error']); ?></div>
-        <?php endif; ?>
-        <?php if(isset($_GET['success'])): ?>
-            <div class="alert alert-success py-2"><?php echo htmlspecialchars($_GET['success']); ?></div>
-        <?php endif; ?>
-
-        <form method="POST" action="">
-            <div class="mb-3">
-                <label class="form-label fw-semibold">Username</label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="fa-solid fa-user"></i></span>
-                    <input type="text" name="username" class="form-control" required>
-                </div>
-            </div>
-            <div class="mb-4">
-                <label class="form-label fw-semibold">Password</label>
-                <div class="input-group">
-                    <span class="input-group-text"><i class="fa-solid fa-lock"></i></span>
-                    <input type="password" name="password" class="form-control" required>
-                </div>
-            </div>
-            <button type="submit" name="login" class="btn btn-primary w-100 fw-bold py-2">Sign In</button>
-        </form>
+<div class="login-card">
+    <div class="text-center mb-4">
+        <h3 class="fw-bold mb-1" style="color: #6f42c1 !important;"><i class="bi bi-heart-pulse-fill me-2"></i>MedFlow</h3>
+        <p class="text-muted small">School Clinic Management System</p>
     </div>
+
+    <?php if (isset($_GET['error'])): ?>
+        <div class="alert alert-danger rounded-4 p-3 mb-4 small"><i class="bi bi-exclamation-triangle-fill me-2"></i><?php echo htmlspecialchars($_GET['error']); ?></div>
+    <?php endif; ?>
+
+    <?php if (!empty($error_msg)): ?>
+        <div class="alert alert-danger rounded-4 p-3 mb-4 small"><i class="bi bi-exclamation-triangle-fill me-2"></i><?php echo htmlspecialchars($error_msg); ?></div>
+    <?php endif; ?>
+
+    <form action="" method="POST">
+        <!-- Username Field -->
+        <div class="mb-3">
+            <label for="username" class="form-label text-muted small fw-bold">Username</label>
+            <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-person"></i></span>
+                <input type="text" class="form-control" id="username" name="username" placeholder="Enter username" required>
+            </div>
+        </div>
+
+        <!-- Password Field with Show/Hide Toggle -->
+        <div class="mb-4">
+            <label for="password" class="form-label text-muted small fw-bold">Password</label>
+            <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-lock"></i></span>
+                <input type="password" class="form-control" id="password" name="password" placeholder="••••••••" required>
+                <span class="input-group-text" id="togglePassword" style="cursor: pointer;">
+                    <i class="bi bi-eye text-muted" id="toggleIcon"></i>
+                </span>
+            </div>
+        </div>
+
+        <!-- Submit Button -->
+        <button type="submit" class="btn btn-purple w-100 shadow-sm">Sign In</button>
+    </form>
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<!-- Password Show/Hide Toggle Script -->
+<script>
+    const togglePassword = document.getElementById('togglePassword');
+    const passwordInput = document.getElementById('password');
+    const toggleIcon = document.getElementById('toggleIcon');
+
+    if (togglePassword) {
+        togglePassword.addEventListener('click', function () {
+            const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
+            passwordInput.setAttribute('type', type);
+            
+            toggleIcon.classList.toggle('bi-eye');
+            toggleIcon.classList.toggle('bi-eye-slash');
+        });
+    }
+</script>
 
 </body>
 </html>

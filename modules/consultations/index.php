@@ -62,6 +62,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     <title>Consultations - MedFlow</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Select2 CSS CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" />
+
     <style>
         body { background-color: #f4f5fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
         
@@ -140,6 +145,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
             background-color: #ffffff;
             border-color: #6f42c1;
             box-shadow: 0 0 0 4px rgba(111, 66, 193, 0.1);
+        }
+
+        /* Select2 Bootstrap 5 Fixes */
+        .select2-container--bootstrap-5 .select2-selection {
+            border-radius: 12px;
+            padding: 8px 12px;
+            border: 1px solid #e2e8f0;
+            background-color: #f8fafc;
+            min-height: 48px;
+        }
+        .select2-container--bootstrap-5 .select2-selection--single .select2-selection__rendered {
+            line-height: 30px;
         }
     </style>
 </head>
@@ -261,7 +278,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
 
     </div>
 
-    <!-- LOG CONSULTATION MODAL WITH INVENTORY AUTO-DEDUCTION (Admin / Nurse Only) -->
+    <!-- LOG CONSULTATION MODAL WITH SEARCHABLE STUDENT SELECT & INVENTORY AUTO-DEDUCTION -->
     <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
     <div class="modal fade" id="addConsultationModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
@@ -274,8 +291,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                     <div class="modal-body p-4">
                         <div class="mb-3">
                             <label class="form-label text-muted small fw-bold text-uppercase">Select Student</label>
-                            <select name="student_id" class="form-select" required>
-                                <option value="">-- Choose Student --</option>
+                            <select name="student_id" class="form-select searchable-student-select" required style="width: 100%;">
+                                <option value="">-- Search Student by Name or Section --</option>
                                 <?php
                                 $students = $pdo->query("SELECT student_id, first_name, last_name, grade_section FROM students ORDER BY last_name ASC");
                                 while($s = $students->fetch(PDO::FETCH_ASSOC)) {
@@ -307,9 +324,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                         <!-- Automated Inventory Deduction Fields -->
                         <div class="row mb-3">
                             <div class="col-md-8">
-                                <label class="form-label text-muted small fw-bold text-uppercase">Dispense Medicine (Optional)</label>
+                                <label class="form-label text-muted small fw-bold text-uppercase">Dispense Medicine / Supply (Optional)</label>
                                 <select name="inventory_item_id" class="form-select">
-                                    <option value="">-- No Medicine Dispensed --</option>
+                                    <option value="">-- No Item Dispensed --</option>
                                     <?php
                                     $inv_list = $pdo->query("SELECT item_id, item_name, current_stock FROM inventory ORDER BY item_name ASC");
                                     while($item = $inv_list->fetch(PDO::FETCH_ASSOC)) {
@@ -345,5 +362,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
 
     <!-- INJECT FOOTER -->
     <?php include '../../includes/footer.php'; ?>
+
+    <!-- jQuery & Select2 JS CDNs -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            $('.searchable-student-select').select2({
+                theme: 'bootstrap-5',
+                dropdownParent: $('#addConsultationModal'),
+                placeholder: 'Search student by name or section...'
+            });
+        });
+    </script>
 </body>
 </html>
