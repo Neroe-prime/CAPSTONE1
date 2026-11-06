@@ -18,6 +18,31 @@ try {
     $user_role = 'Teacher';
 }
 
+/**
+ * Automatically compute and update the daily consumption rate for an inventory item
+ * based on recent consultation dispensing history for Holt's Trend model.
+ */
+function updateInventoryConsumptionRate($pdo, $item_id) {
+    $sql = "SELECT SUM(c.quantity_used) as total_dispensed, 
+                   DATEDIFF(MAX(c.consultation_date), MIN(c.consultation_date)) as day_span
+            FROM consultations c 
+            WHERE c.inventory_item_id = ? AND c.consultation_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+    
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([$item_id]);
+    $data = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    $total_dispensed = $data['total_dispensed'] ?? 0;
+    
+    $daily_rate = 1.00;
+    if ($total_dispensed > 0) {
+        $daily_rate = round($total_dispensed / 30, 2); 
+    }
+
+    $update = $pdo->prepare("UPDATE inventory SET daily_consumption_rate = ? WHERE item_id = ?");
+    $update->execute([$daily_rate, $item_id]);
+}
+
 // Handle Form Submission for Logging a New Consultation & Auto-Deducting Inventory (Admin / Nurse Only)
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     if ($user_role !== 'Admin' && $user_role !== 'Nurse') {
@@ -30,24 +55,28 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     $symptom_category = trim($_POST['symptom_category']);
     $action_taken = trim($_POST['action_taken']);
     $status = trim($_POST['status']);
+    
     $inventory_item_id = !empty($_POST['inventory_item_id']) ? (int)$_POST['inventory_item_id'] : null;
     $quantity_used = !empty($_POST['quantity_used']) ? (int)$_POST['quantity_used'] : 0;
 
     try {
         $pdo->beginTransaction();
 
-        // 1. Insert consultation log
-        $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status]);
+        // 1. Insert consultation log (including inventory tracking fields)
+        $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status, inventory_item_id, quantity_used) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status, $inventory_item_id, $quantity_used]);
 
-        // 2. If medicine was dispensed, automatically deduct from inventory
+        // 2. If medicine was dispensed, automatically deduct from inventory and update consumption rate
         if ($inventory_item_id && $quantity_used > 0) {
             $update_inv = $pdo->prepare("UPDATE inventory SET current_stock = GREATEST(0, current_stock - ?) WHERE item_id = ?");
             $update_inv->execute([$quantity_used, $inventory_item_id]);
+
+            // Automatically recalculate the daily consumption rate for Holt's model
+            updateInventoryConsumptionRate($pdo, $inventory_item_id);
         }
 
         $pdo->commit();
-        $success_msg = "Consultation successfully logged and inventory updated!";
+        $success_msg = "Consultation successfully logged, inventory updated, and consumption rate recalculated!";
     } catch (PDOException $e) {
         $pdo->rollBack();
         $error_msg = "Error: " . $e->getMessage();
@@ -62,10 +91,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     <title>Consultations - MedFlow</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    
-    <!-- Select2 CSS CDN -->
-    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" />
 
     <style>
         body { background-color: #f4f5fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
@@ -145,18 +170,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
             background-color: #ffffff;
             border-color: #6f42c1;
             box-shadow: 0 0 0 4px rgba(111, 66, 193, 0.1);
-        }
-
-        /* Select2 Bootstrap 5 Fixes */
-        .select2-container--bootstrap-5 .select2-selection {
-            border-radius: 12px;
-            padding: 8px 12px;
-            border: 1px solid #e2e8f0;
-            background-color: #f8fafc;
-            min-height: 48px;
-        }
-        .select2-container--bootstrap-5 .select2-selection--single .select2-selection__rendered {
-            line-height: 30px;
         }
     </style>
 </head>
@@ -240,7 +253,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                                 $badgeClass = 'bg-secondary';
                                 if ($row['status'] == 'Cleared') $badgeClass = 'bg-success bg-opacity-10 text-success border border-success-subtle px-3 py-2 rounded-pill';
                                 elseif ($row['status'] == 'Under Observation') $badgeClass = 'bg-warning bg-opacity-10 text-warning border border-warning-subtle px-3 py-2 rounded-pill';
-                                elseif ($row['status'] == 'Sent Home') $badgeClass = 'bg-danger bg-opacity-10 text-danger border border-danger-subtle px-3 py-2 rounded-pill';
+                                elseif ($row['status'] == 'Excused to Rest at Home') $badgeClass = 'bg-danger bg-opacity-10 text-danger border border-danger-subtle px-3 py-2 rounded-pill';
+                                elseif ($row['status'] == 'Referred to Hospital / Clinic') $badgeClass = 'bg-primary bg-opacity-10 text-primary border border-primary-subtle px-3 py-2 rounded-pill';
                                 else $badgeClass = 'bg-secondary bg-opacity-10 text-secondary px-3 py-2 rounded-pill';
 
                                 echo "<tr>";
@@ -278,7 +292,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
 
     </div>
 
-    <!-- LOG CONSULTATION MODAL WITH SEARCHABLE STUDENT SELECT & INVENTORY AUTO-DEDUCTION -->
+    <!-- LOG CONSULTATION MODAL WITH TYPE-TO-SEARCH DATALISTS -->
     <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
     <div class="modal fade" id="addConsultationModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
@@ -289,22 +303,25 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                 </div>
                 <form action="" method="POST">
                     <div class="modal-body p-4">
+                        <!-- Type-to-Search Student Input -->
                         <div class="mb-3">
-                            <label class="form-label text-muted small fw-bold text-uppercase">Select Student</label>
-                            <select name="student_id" class="form-select searchable-student-select" required style="width: 100%;">
-                                <option value="">-- Search Student by Name or Section --</option>
+                            <label class="form-label text-muted small fw-bold text-uppercase">Search & Select Student</label>
+                            <input class="form-control" list="student_list" name="student_id" placeholder="Type student name or ID..." required>
+                            <datalist id="student_list">
                                 <?php
                                 $students = $pdo->query("SELECT student_id, first_name, last_name, grade_section FROM students ORDER BY last_name ASC");
                                 while($s = $students->fetch(PDO::FETCH_ASSOC)) {
                                     echo "<option value='{$s['student_id']}'>{$s['last_name']}, {$s['first_name']} ({$s['grade_section']})</option>";
                                 }
                                 ?>
-                            </select>
+                            </datalist>
                         </div>
+
                         <div class="mb-3">
                             <label class="form-label text-muted small fw-bold text-uppercase">Chief Complaint / Symptoms</label>
                             <input type="text" name="chief_complaint" class="form-control" placeholder="e.g., Fever (38.5°C) and body malaise" required>
                         </div>
+
                         <div class="mb-3">
                             <label class="form-label text-muted small fw-bold text-uppercase">Symptom Category (For EARS Surveillance)</label>
                             <select name="symptom_category" class="form-select" required>
@@ -316,24 +333,25 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                                 <option value="Other">Other</option>
                             </select>
                         </div>
+
                         <div class="mb-3">
                             <label class="form-label text-muted small fw-bold text-uppercase">Action Taken / Treatment Given</label>
                             <input type="text" name="action_taken" class="form-control" placeholder="e.g., Given Paracetamol 500mg, advised rest" required>
                         </div>
                         
-                        <!-- Automated Inventory Deduction Fields -->
+                        <!-- Type-to-Search Medicine Input using Datalist -->
                         <div class="row mb-3">
                             <div class="col-md-8">
                                 <label class="form-label text-muted small fw-bold text-uppercase">Dispense Medicine / Supply (Optional)</label>
-                                <select name="inventory_item_id" class="form-select">
-                                    <option value="">-- No Item Dispensed --</option>
+                                <input class="form-control" list="inventory_list" name="inventory_item_id" placeholder="Type medicine name...">
+                                <datalist id="inventory_list">
                                     <?php
                                     $inv_list = $pdo->query("SELECT item_id, item_name, current_stock FROM inventory ORDER BY item_name ASC");
                                     while($item = $inv_list->fetch(PDO::FETCH_ASSOC)) {
                                         echo "<option value='{$item['item_id']}'>{$item['item_name']} (Stock: {$item['current_stock']})</option>";
                                     }
                                     ?>
-                                </select>
+                                </datalist>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label text-muted small fw-bold text-uppercase">Quantity</label>
@@ -346,7 +364,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                             <select name="status" class="form-select" required>
                                 <option value="Cleared">Cleared (Back to Class)</option>
                                 <option value="Under Observation">Under Observation</option>
-                                <option value="Sent Home">Sent Home</option>
+                                <option value="Excused to Rest at Home">Excused to Rest at Home</option>
+                                <option value="Referred to Hospital / Clinic">Referred to Hospital / Clinic</option>
                             </select>
                         </div>
                     </div>
@@ -363,17 +382,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     <!-- INJECT FOOTER -->
     <?php include '../../includes/footer.php'; ?>
 
-    <!-- jQuery & Select2 JS CDNs -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-    <script>
-        $(document).ready(function() {
-            $('.searchable-student-select').select2({
-                theme: 'bootstrap-5',
-                dropdownParent: $('#addConsultationModal'),
-                placeholder: 'Search student by name or section...'
-            });
-        });
-    </script>
 </body>
 </html>

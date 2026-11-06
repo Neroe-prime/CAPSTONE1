@@ -48,14 +48,14 @@ require_once '../../includes/db_connect.php';
             font-size: 0.8rem;
             letter-spacing: 1px;
             border-bottom: 2px solid #eaedf2;
-            padding: 15px 20px;
+            padding: 15px 15px;
         }
         .table tbody tr {
             background-color: #ffffff;
             box-shadow: 0 3px 10px rgba(0, 0, 0, 0.02);
         }
         .table tbody td {
-            padding: 20px;
+            padding: 18px 15px;
             color: #2d3748;
             vertical-align: middle;
             font-size: 0.95rem;
@@ -92,7 +92,7 @@ require_once '../../includes/db_connect.php';
             <div class="d-flex justify-content-between align-items-center">
                 <div>
                     <h2 class="fw-bold mb-2 text-white"><i class="fa-solid fa-pills me-3"></i> Medical Supplies Inventory</h2>
-                    <p class="text-white-50 fs-6 mb-0">Monitor stock levels, reorder thresholds, and consumption rates.</p>
+                    <p class="text-white-50 fs-6 mb-0">Monitor stock levels, batch numbers, expiration dates, and consumption rates.</p>
                 </div>
                 <a href="create.php" class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill">
                     <i class="fa-solid fa-plus me-2"></i> Add New Item
@@ -121,9 +121,10 @@ require_once '../../includes/db_connect.php';
                         <tr>
                             <th class="ps-4">Item ID</th>
                             <th>Medicine / Supply Name</th>
+                            <th>Batch Number</th>
+                            <th>Initial Stock</th>
                             <th>Current Stock</th>
-                            <th>Critical Reorder Level</th>
-                            <th>Daily Consumption (Holt's Data)</th>
+                            <th>Expiration Date</th>
                             <th>Status</th>
                             <th class="text-end pe-4">Action</th>
                         </tr>
@@ -134,23 +135,43 @@ require_once '../../includes/db_connect.php';
                             $stmt = $pdo->query("SELECT * FROM inventory ORDER BY item_id DESC");
                             
                             if ($stmt->rowCount() > 0) {
+                                $today = date('Y-m-d');
+                                $warning_date = date('Y-m-d', strtotime('+30 days'));
+
                                 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                     $stock = (int)$row['current_stock'];
+                                    $initial = (int)($row['initial_stock'] ?? 0);
                                     $reorder = (int)$row['reorder_level'];
+                                    $batch = !empty($row['batch_number']) ? $row['batch_number'] : 'N/A';
+                                    $expiry = $row['expiration_date'] ?? null;
                                     
+                                    // Stock Status Badge
                                     if ($stock <= $reorder) {
-                                        $statusBadge = "<span class='badge bg-danger bg-opacity-10 text-danger border border-danger-subtle px-3 py-2 rounded-pill fw-semibold'>Low Stock</span>";
+                                        $stockBadge = "<span class='badge bg-danger bg-opacity-10 text-danger border border-danger-subtle px-2 py-1 rounded-pill fw-semibold'>Low Stock</span>";
                                     } else {
-                                        $statusBadge = "<span class='badge bg-success bg-opacity-10 text-success border border-success-subtle px-3 py-2 rounded-pill fw-semibold'>Healthy Stock</span>";
+                                        $stockBadge = "<span class='badge bg-success bg-opacity-10 text-success border border-success-subtle px-2 py-1 rounded-pill fw-semibold'>Healthy</span>";
+                                    }
+
+                                    // Expiry Status Badge Logic
+                                    $expiryBadge = "<span class='text-muted'>N/A</span>";
+                                    if (!empty($expiry)) {
+                                        if ($expiry < $today) {
+                                            $expiryBadge = "<span class='badge bg-danger px-2 py-1 rounded-pill'>Expired ($expiry)</span>";
+                                        } elseif ($expiry <= $warning_date) {
+                                            $expiryBadge = "<span class='badge bg-warning text-dark px-2 py-1 rounded-pill'>Expiring Soon ($expiry)</span>";
+                                        } else {
+                                            $expiryBadge = "<span class='text-dark fw-medium'>$expiry</span>";
+                                        }
                                     }
                                     
                                     echo "<tr>";
                                     echo "<td class='ps-4'><span class='badge bg-purple bg-opacity-10 text-purple border px-3 py-2 rounded-pill fw-semibold' style='background-color: #f3f0ff !important; color: #6f42c1 !important;'>#" . htmlspecialchars($row['item_id']) . "</span></td>";
                                     echo "<td><strong class='text-dark fs-6'>" . htmlspecialchars($row['item_name']) . "</strong></td>";
+                                    echo "<td><code class='text-secondary fw-bold'>" . htmlspecialchars($batch) . "</code></td>";
+                                    echo "<td>" . $initial . "</td>";
                                     echo "<td><span class='fw-bold fs-6'>" . $stock . "</span></td>";
-                                    echo "<td>" . $reorder . "</td>";
-                                    echo "<td class='text-muted'>" . number_format($row['daily_consumption_rate'] ?? 0, 2) . " units/day</td>";
-                                    echo "<td>{$statusBadge}</td>";
+                                    echo "<td>{$expiryBadge}</td>";
+                                    echo "<td>{$stockBadge}</td>";
                                     echo "<td class='text-end pe-4'>
                                             <div class='d-flex justify-content-end gap-2'>
                                                 <a href='edit.php?id=" . $row['item_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Update Item'>
@@ -164,13 +185,13 @@ require_once '../../includes/db_connect.php';
                                     echo "</tr>";
                                 }
                             } else {
-                                echo "<tr><td colspan='7' class='text-center text-muted py-5'>
+                                echo "<tr><td colspan='8' class='text-center text-muted py-5'>
                                         <i class='fa-solid fa-boxes-stacked fa-3x mb-3 text-secondary opacity-25'></i>
                                         <p class='mb-0 fw-medium'>No inventory items found.</p>
                                       </td></tr>";
                             }
                         } catch (PDOException $e) {
-                            echo "<tr><td colspan='7' class='text-center text-danger py-4'>Error loading inventory data.</td></tr>";
+                            echo "<tr><td colspan='8' class='text-center text-danger py-4'>Error loading inventory data: " . htmlspecialchars($e->getMessage()) . "</td></tr>";
                         }
                         ?>
                     </tbody>

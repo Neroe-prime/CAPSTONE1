@@ -9,6 +9,70 @@ if(!isset($_SESSION['user_id'])){
 }
 require_once '../../includes/db_connect.php';
 
+$success_msg = '';
+$error_msg = '';
+
+// Handle Quick-Action Student Registration Form Submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_student'])) {
+    $student_id = trim($_POST['new_student_id']);
+    $first_name = trim($_POST['first_name']);
+    $last_name = trim($_POST['last_name']);
+    $grade_section = trim($_POST['grade_section']);
+    $gender = trim($_POST['gender']);
+
+    if (!empty($student_id) && !empty($first_name) && !empty($last_name)) {
+        try {
+            $stmt = $pdo->prepare("INSERT INTO students (student_id, first_name, last_name, grade_section, gender) VALUES (?, ?, ?, ?, ?)");
+            $stmt->execute([$student_id, $first_name, $last_name, $grade_section, $gender]);
+            $success_msg = "Student profile registered successfully!";
+        } catch (PDOException $e) {
+            $error_msg = "Database error (Student ID might already exist): " . $e->getMessage();
+        }
+    } else {
+        $error_msg = "Please fill in all required student fields.";
+    }
+}
+
+// Handle Quick-Action Consultation Form Submission with Inventory Deduction
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_consultation'])) {
+    $student_id = trim($_POST['student_id']);
+    $chief_complaint = trim($_POST['chief_complaint']);
+    $symptom_category = trim($_POST['symptom_category']);
+    $medication_item = trim($_POST['medication_item']);
+    $quantity_used = (int)($_POST['quantity_used'] ?? 1);
+    $status = trim($_POST['status']);
+    $action_taken = trim($_POST['action_taken']);
+
+    // If a medicine was selected, append or set it in action taken
+    if (!empty($medication_item)) {
+        $action_taken = !empty($action_taken) ? $action_taken . " | Dispensed: {$medication_item} (Qty: {$quantity_used})" : "Dispensed: {$medication_item} (Qty: {$quantity_used})";
+    }
+
+    if (!empty($student_id) && !empty($chief_complaint)) {
+        try {
+            $pdo->beginTransaction();
+
+            // 1. Insert Consultation Record
+            $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status, consultation_date) VALUES (?, ?, ?, ?, ?, NOW())");
+            $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status]);
+
+            // 2. Automatically Deduct Inventory Stock if a medicine was selected
+            if (!empty($medication_item) && $quantity_used > 0) {
+                $inv_stmt = $pdo->prepare("UPDATE inventory SET current_stock = GREATEST(0, current_stock - ?) WHERE item_name = ?");
+                $inv_stmt->execute([$quantity_used, $medication_item]);
+            }
+
+            $pdo->commit();
+            $success_msg = "Consultation logged and inventory updated successfully!";
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $error_msg = "Database error: " . $e->getMessage();
+        }
+    } else {
+        $error_msg = "Please fill in all required consultation fields.";
+    }
+}
+
 // 1. Fetch Dynamic KPI Metrics from Database
 $visits_today = 0;
 $stock_outs = 0;
@@ -64,8 +128,8 @@ try {
         .sidebar a:hover, .sidebar a.active { color: #ffffff; background-color: #2c3e50; border-left: 4px solid #3498db; }
         .sidebar a i { margin-right: 10px; width: 20px; text-align: center; }
         
-        /* Spacious Layout */
-        .main-content { margin-left: 250px; padding: 45px; width: calc(100% - 250px); }
+        .main-content { margin-left: 250px; padding: 45px; width: calc(100% - 250px); min-height: 100vh; position: relative; z-index: 1; }
+        .top-navbar { position: relative; z-index: 1050; }
         
         .card { border: none; border-radius: 20px; box-shadow: 0 8px 25px rgba(111, 66, 193, 0.07); margin-bottom: 24px; transition: transform 0.2s ease, box-shadow 0.2s ease; background-color: #ffffff; }
         .clickable-card:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(111, 66, 193, 0.12); cursor: pointer; }
@@ -80,7 +144,6 @@ try {
         .chart-container { position: relative; height: 280px; width: 100%; }
         .progress { height: 10px; border-radius: 5px; background-color: #edf2f7; }
 
-        /* Spacious Table Styling */
         .table {
             border-collapse: separate;
             border-spacing: 0 10px;
@@ -125,8 +188,37 @@ try {
     <?php include '../../includes/sidebar.php'; ?>
 
     <div class="main-content">
-        
         <?php include '../../includes/topbar.php'; ?>
+
+        <?php if (!empty($success_msg)): ?>
+            <div class="alert alert-success alert-dismissible fade show rounded-4 mb-4 mt-3" role="alert">
+                <i class="fa-solid fa-circle-check me-2"></i> <?php echo $success_msg; ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        <?php endif; ?>
+
+        <?php if (!empty($error_msg)): ?>
+            <div class="alert alert-danger alert-dismissible fade show rounded-4 mb-4 mt-3" role="alert">
+                <i class="fa-solid fa-circle-exclamation me-2"></i> <?php echo $error_msg; ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        <?php endif; ?>
+
+        <!-- Dashboard Header with Quick-Action Buttons -->
+        <div class="d-flex justify-content-between align-items-center mb-4 mt-4">
+            <div>
+                <h4 class="fw-bold text-dark mb-1">Clinic Dashboard Overview</h4>
+                <p class="text-muted small mb-0">Real-time monitoring, outbreak surveillance, and inventory thresholds.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-outline-primary px-3 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newStudentModal">
+                    <i class="fa-solid fa-user-plus me-1"></i> New Student
+                </button>
+                <button type="button" class="btn btn-primary px-4 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newConsultationModal" style="background-color: #6f42c1; border: none;">
+                    <i class="fa-solid fa-plus me-2"></i> New Consultation
+                </button>
+            </div>
+        </div>
 
         <div class="alert alert-danger d-flex align-items-center border-0 shadow-sm rounded-4 p-4 mb-4" role="alert" style="background-color: #fff5f5; color: #c53030;">
             <i class="fa-solid fa-triangle-exclamation fs-3 me-3"></i>
@@ -232,7 +324,10 @@ try {
                             <div class="progress mb-1">
                                 <div class="progress-bar <?php echo $bar_color; ?>" role="progressbar" style="width: <?php echo $width_pct; ?>%;"></div>
                             </div>
-                            <small class="text-muted">Current Stock: <?php echo $stock; ?> pcs</small>
+                            <div class="d-flex justify-content-between">
+                                <small class="text-muted">Current Stock: <?php echo $stock; ?> pcs</small>
+                                <small class="text-muted fst-italic" style="font-size: 0.75rem;">Burn Rate: <?php echo $daily_rate; ?>/day</small>
+                            </div>
                         </div>
                         <?php endwhile; ?>
                     </div>
@@ -245,9 +340,15 @@ try {
         <div class="row mt-4">
             <div class="col-12">
                 <div class="card p-4">
-                    <h5 class="fw-bold mb-3 text-dark"><i class="fa-solid fa-clock-rotate-left me-2 text-purple" style="color: #6f42c1;"></i> Recent Consultations</h5>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h5 class="fw-bold mb-0 text-dark"><i class="fa-solid fa-clock-rotate-left me-2 text-purple" style="color: #6f42c1;"></i> Recent Consultations</h5>
+                        <!-- Live Search Bar Filter -->
+                        <div style="width: 280px;">
+                            <input type="text" id="tableSearchInput" class="form-control form-control-sm rounded-pill px-3" placeholder="Filter recent table...">
+                        </div>
+                    </div>
                     <div class="table-responsive">
-                        <table class="table align-middle mb-0">
+                        <table class="table align-middle mb-0" id="consultationsTable">
                             <thead>
                                 <tr>
                                     <th class="ps-3">Time</th>
@@ -255,7 +356,7 @@ try {
                                     <th>Grade / Section</th>
                                     <th>Chief Complaint</th>
                                     <th>Action Taken</th>
-                                    <th class="text-end pe-3">Status</th>
+                                    <th class="text-end pe-3">Status Progression</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -272,12 +373,21 @@ try {
                                     if ($stmt->rowCount() > 0) {
                                         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
                                             $time = date('h:i A', strtotime($row['consultation_date']));
-                                            
-                                            $badgeClass = 'bg-secondary';
-                                            if ($row['status'] == 'Cleared') $badgeClass = 'bg-success bg-opacity-10 text-success border border-success-subtle px-3 py-2 rounded-pill';
-                                            elseif ($row['status'] == 'Under Observation') $badgeClass = 'bg-warning bg-opacity-10 text-warning border border-warning-subtle px-3 py-2 rounded-pill';
-                                            elseif ($row['status'] == 'Sent Home') $badgeClass = 'bg-danger bg-opacity-10 text-danger border border-danger-subtle px-3 py-2 rounded-pill';
-                                            else $badgeClass = 'bg-secondary bg-opacity-10 text-secondary px-3 py-2 rounded-pill';
+                                            $currentStatus = $row['status'];
+
+                                            if ($currentStatus == 'Cleared') {
+                                                $startText = 'Under Observation';
+                                                $endBadge = '<span class="badge bg-success bg-opacity-10 text-success border border-success-subtle px-3 py-2 rounded-pill fw-semibold">Cleared</span>';
+                                            } elseif ($currentStatus == 'Excused to Rest at Home') {
+                                                $startText = 'Under Observation';
+                                                $endBadge = '<span class="badge bg-danger bg-opacity-10 text-danger border border-danger-subtle px-3 py-2 rounded-pill fw-semibold">Excused to Rest at Home</span>';
+                                            } elseif ($currentStatus == 'Referred to Hospital / Clinic') {
+                                                $startText = 'Under Observation';
+                                                $endBadge = '<span class="badge bg-primary bg-opacity-10 text-primary border border-primary-subtle px-3 py-2 rounded-pill fw-semibold">Referred to Hospital</span>';
+                                            } else {
+                                                $startText = 'Logged';
+                                                $endBadge = '<span class="badge bg-warning bg-opacity-10 text-warning border border-warning-subtle px-3 py-2 rounded-pill fw-semibold">Under Observation</span>';
+                                            }
 
                                             echo "<tr>";
                                             echo "<td class='ps-3 fw-medium text-muted'>{$time}</td>";
@@ -285,7 +395,11 @@ try {
                                             echo "<td><span class='badge bg-info bg-opacity-10 text-info px-3 py-2 rounded-pill'>" . htmlspecialchars($row['grade_section']) . "</span></td>";
                                             echo "<td>" . htmlspecialchars($row['chief_complaint']) . "</td>";
                                             echo "<td>" . htmlspecialchars($row['action_taken']) . "</td>";
-                                            echo "<td class='text-end pe-3'><span class='badge {$badgeClass} fw-semibold'>" . htmlspecialchars($row['status']) . "</span></td>";
+                                            echo "<td class='text-end pe-3'>";
+                                            echo "  <span class='text-muted small fw-medium'>" . $startText . "</span>";
+                                            echo "  <i class='fa-solid fa-arrow-right mx-2 text-muted opacity-50 small'></i>";
+                                            echo "  " . $endBadge;
+                                            echo "</td>";
                                             echo "</tr>";
                                         }
                                     } else {
@@ -303,9 +417,158 @@ try {
         </div>
     </div>
 
+    <!-- Quick-Action New Student Modal -->
+    <div class="modal fade" id="newStudentModal" tabindex="-1" aria-labelledby="newStudentModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 rounded-4 shadow-lg">
+                <form method="POST">
+                    <div class="modal-header border-0 pb-0">
+                        <h5 class="modal-title fw-bold text-dark" id="newStudentModalLabel"><i class="fa-solid fa-user-plus text-primary me-2"></i> Register New Student</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body py-4">
+                        <input type="hidden" name="quick_student" value="1">
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">Student ID / Number</label>
+                            <input type="text" name="new_student_id" class="form-control rounded-3" placeholder="e.g., 2026-10045" required>
+                        </div>
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label small fw-bold text-muted">First Name</label>
+                                <input type="text" name="first_name" class="form-control rounded-3" placeholder="First name" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small fw-bold text-muted">Last Name</label>
+                                <input type="text" name="last_name" class="form-control rounded-3" placeholder="Last name" required>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">Grade & Section</label>
+                            <input type="text" name="grade_section" class="form-control rounded-3" placeholder="e.g., BSIT 301A" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">Gender</label>
+                            <select name="gender" class="form-select rounded-3">
+                                <option value="Male">Male</option>
+                                <option value="Female">Female</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer border-0 pt-0">
+                        <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary rounded-pill px-4 shadow-sm">Register Student</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick-Action New Consultation Modal (Fully Synced with Type-to-Search Student & Searchable Medicine Datalist) -->
+    <div class="modal fade" id="newConsultationModal" tabindex="-1" aria-labelledby="newConsultationModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content border-0 rounded-4 shadow-lg">
+                <form method="POST">
+                    <div class="modal-header border-0 pb-0">
+                        <h5 class="modal-title fw-bold text-dark" id="newConsultationModalLabel">
+                            <i class="fa-solid fa-stethoscope text-purple me-2" style="color:#6f42c1;"></i> Log New Clinic Visit
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body py-4">
+                        <input type="hidden" name="quick_consultation" value="1">
+                        
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">SEARCH & SELECT STUDENT</label>
+                            <input class="form-control rounded-3" list="student_list" name="student_id" placeholder="Type student name or ID..." required>
+                            <datalist id="student_list">
+                                <?php
+                                try {
+                                    $students_query = $pdo->query("SELECT student_id, first_name, last_name, grade_section FROM students ORDER BY last_name ASC");
+                                    while ($s = $students_query->fetch(PDO::FETCH_ASSOC)) {
+                                        echo '<option value="' . htmlspecialchars($s['student_id']) . '">' . htmlspecialchars($s['last_name'] . ', ' . $s['first_name'] . ' (' . $s['grade_section'] . ')') . '</option>';
+                                    }
+                                } catch (Exception $e) {}
+                                ?>
+                            </datalist>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">SYMPTOM CATEGORY (FOR EARS SURVEILLANCE)</label>
+                            <select name="symptom_category" class="form-select rounded-3" required>
+                                <option value="Fever">Fever (Triggers EARS)</option>
+                                <option value="Cough & Cold">Cough & Cold</option>
+                                <option value="Headache / Dizziness">Headache / Dizziness</option>
+                                <option value="Stomachache">Stomachache / Acid Reflux</option>
+                                <option value="Injury / Wound">Injury / Wound</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">CHIEF COMPLAINT / SYMPTOMS</label>
+                            <textarea name="chief_complaint" class="form-control rounded-3" rows="2" placeholder="e.g., Fever (38.5°C) and body malaise" required></textarea>
+                        </div>
+                        
+                        <!-- Searchable Inventory Medicine Selector using Datalist -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-8">
+                                <label class="form-label small fw-bold text-muted">DISPENSE MEDICINE / SUPPLY (OPTIONAL)</label>
+                                <input class="form-control rounded-3" list="medicine_list" name="medication_item" placeholder="Type medicine name...">
+                                <datalist id="medicine_list">
+                                    <?php
+                                    try {
+                                        $meds = $pdo->query("SELECT item_name, current_stock FROM inventory WHERE current_stock > 0 ORDER BY item_name ASC");
+                                        while ($m = $meds->fetch(PDO::FETCH_ASSOC)) {
+                                            echo '<option value="' . htmlspecialchars($m['item_name']) . '">Stock: ' . $m['current_stock'] . ' pcs</option>';
+                                        }
+                                    } catch (Exception $e) {}
+                                    ?>
+                                </datalist>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small fw-bold text-muted">QUANTITY</label>
+                                <input type="number" name="quantity_used" class="form-control rounded-3" value="1" min="1">
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">ACTION TAKEN / TREATMENT GIVEN</label>
+                            <input type="text" name="action_taken" class="form-control rounded-3" placeholder="e.g., Given Paracetamol 500mg, advised rest">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold text-muted">STATUS</label>
+                            <select name="status" class="form-select rounded-3">
+                                <option value="Under Observation">Under Observation</option>
+                                <option value="Cleared">Cleared (Back to Class)</option>
+                                <option value="Excused to Rest at Home">Excused to Rest at Home</option>
+                                <option value="Referred to Hospital / Clinic">Referred to Hospital / Clinic</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer border-0 pt-0">
+                        <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary rounded-pill px-4 shadow-sm" style="background-color: #6f42c1; border:none;">Save & Deduct Stock</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <?php include '../../includes/footer.php'; ?>
-    
+
     <script>
+        // Live Filter for Recent Consultations Table
+        document.getElementById('tableSearchInput').addEventListener('keyup', function() {
+            let filter = this.value.toLowerCase();
+            let rows = document.querySelectorAll('#consultationsTable tbody tr');
+            rows.forEach(row => {
+                let text = row.textContent.toLowerCase();
+                row.style.display = text.includes(filter) ? '' : 'none';
+            });
+        });
+
         const canvas = document.getElementById('earsChart');
         if (canvas) {
             const ctx = canvas.getContext('2d');

@@ -28,18 +28,21 @@ $error_msg = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $item_name = trim($_POST['item_name'] ?? '');
-    $category = trim($_POST['category'] ?? 'Medicine');
+    $batch_number = trim($_POST['batch_number'] ?? '');
     $current_stock = !empty($_POST['current_stock']) ? (int)$_POST['current_stock'] : 0;
-    $unit = trim($_POST['unit'] ?? 'Pieces');
+    $initial_stock = $current_stock; // Initial stock matches starting current stock
+    $expiration_date = $_POST['expiration_date'] ?? null;
+    $reorder_level = 15; // Fixed system-wide policy threshold for reorder alerts
+    $daily_consumption = 1.00; // Default baseline for forecasting
 
-    if (empty($item_name)) {
-        $error_msg = "Item name is required.";
+    if (empty($item_name) || empty($batch_number) || empty($expiration_date)) {
+        $error_msg = "Item name, batch number, and expiration date are required.";
     } else {
         try {
-            $stmt = $pdo->prepare("INSERT INTO inventory (item_name, category, current_stock, unit) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$item_name, $category, $current_stock, $unit]);
+            $stmt = $pdo->prepare("INSERT INTO inventory (item_name, batch_number, current_stock, initial_stock, expiration_date, reorder_level, daily_consumption_rate) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$item_name, $batch_number, $current_stock, $initial_stock, $expiration_date, $reorder_level, $daily_consumption]);
             
-            header("Location: index.php?success=Inventory item added successfully!");
+            header("Location: index.php?success=Inventory item added successfully with fixed alert policy!");
             exit();
         } catch (PDOException $e) {
             $error_msg = "Database Error: " . $e->getMessage();
@@ -77,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="d-flex justify-content-between align-items-center">
                 <div>
                     <h2 class="fw-bold mb-2 text-white"><i class="fa-solid fa-pills me-3"></i> Add Inventory Item</h2>
-                    <p class="text-white-50 fs-6 mb-0">Register new medicine or medical supply into clinic stock.</p>
+                    <p class="text-white-50 fs-6 mb-0">Register new medical stock with strict batch tracking and fixed alert policies.</p>
                 </div>
                 <a href="index.php" class="btn btn-outline-light fw-bold px-4 py-2 rounded-pill shadow-sm">
                     <i class="fa-solid fa-arrow-left me-2"></i> Back to Inventory
@@ -94,33 +97,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="card p-5 col-lg-8 mx-auto">
             <form action="" method="POST">
                 <div class="mb-4">
-                    <label class="form-label text-muted small fw-bold text-uppercase">Item Name</label>
-                    <input type="text" name="item_name" class="form-control" placeholder="e.g., Paracetamol 500mg, Mefenamic Acid, Bandages" required>
+                    <label class="form-label text-muted small fw-bold text-uppercase">Medicine / Supply Name</label>
+                    <input type="text" name="item_name" class="form-control" placeholder="e.g., Paracetamol 500mg" required>
+                </div>
+
+                <div class="mb-4">
+                    <label class="form-label text-muted small fw-bold text-uppercase">Batch Number</label>
+                    <input type="text" name="batch_number" class="form-control" placeholder="e.g., BN-2026-001" required>
                 </div>
 
                 <div class="row mb-4">
                     <div class="col-md-6">
-                        <label class="form-label text-muted small fw-bold text-uppercase">Category</label>
-                        <select name="category" class="form-select" required>
-                            <option value="Medicine">Medicine</option>
-                            <option value="Supply">Medical Supply</option>
-                            <option value="Equipment">Equipment</option>
-                        </select>
+                        <label class="form-label text-muted small fw-bold text-uppercase">Initial / Current Stock Quantity</label>
+                        <input type="number" name="current_stock" class="form-control" value="50" min="0" required>
                     </div>
                     <div class="col-md-6">
-                        <label class="form-label text-muted small fw-bold text-uppercase">Unit</label>
-                        <select name="unit" class="form-select" required>
-                            <option value="Pieces">Pieces / Tablets</option>
-                            <option value="Bottles">Bottles</option>
-                            <option value="Boxes">Boxes</option>
-                            <option value="Packs">Packs</option>
-                        </select>
+                        <label class="form-label text-muted small fw-bold text-uppercase">Expiration Date</label>
+                        <input type="date" name="expiration_date" class="form-control" required>
                     </div>
                 </div>
 
+                <!-- Fixed Reorder Level Policy (Non-Editable / Read-only) -->
                 <div class="mb-4">
-                    <label class="form-label text-muted small fw-bold text-uppercase">Initial Stock Quantity</label>
-                    <input type="number" name="current_stock" class="form-control" value="50" min="0" required>
+                    <label class="form-label text-muted small fw-bold text-uppercase">Critical Reorder Level (System Policy)</label>
+                    <input type="number" class="form-control bg-light text-muted" value="15" readonly title="System reorder thresholds are fixed by institutional clinic policy and cannot be altered.">
+                    <div class="form-text text-muted small mt-1"><i class="fa-solid fa-lock me-1"></i> Fixed rule: Alerts trigger automatically when stock falls below 15 units.</div>
                 </div>
 
                 <div class="d-flex justify-content-end gap-3 pt-3 border-top">
