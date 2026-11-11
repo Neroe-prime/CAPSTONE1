@@ -7,6 +7,19 @@ if(!isset($_SESSION['user_id'])){
     header("Location: ../../index.php?error=Please log in first");
     exit();
 }
+
+// Enforce Role-Based Access Control: Block Teachers from accessing inventory
+$user_role = $_SESSION['role'] ?? 'Teacher';
+if ($user_role === 'Teacher') {
+    header("Location: ../dashboard/index.php?error=Unauthorized access to inventory surveillance");
+    exit();
+}
+
+// Prevent browser caching after logout so 'Back' button won't show inventory
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+
 require_once '../../includes/db_connect.php';
 ?>
 <!DOCTYPE html>
@@ -94,9 +107,11 @@ require_once '../../includes/db_connect.php';
                     <h2 class="fw-bold mb-2 text-white"><i class="fa-solid fa-pills me-3"></i> Medical Supplies Inventory</h2>
                     <p class="text-white-50 fs-6 mb-0">Monitor stock levels, batch numbers, expiration dates, and consumption rates.</p>
                 </div>
-                <a href="create.php" class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill">
-                    <i class="fa-solid fa-plus me-2"></i> Add New Item
-                </a>
+                <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
+                    <a href="create.php" class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill">
+                        <i class="fa-solid fa-plus me-2"></i> Add New Item
+                    </a>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -126,7 +141,9 @@ require_once '../../includes/db_connect.php';
                             <th>Current Stock</th>
                             <th>Expiration Date</th>
                             <th>Status</th>
-                            <th class="text-end pe-4">Action</th>
+                            <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
+                                <th class="text-end pe-4">Action</th>
+                            <?php endif; ?>
                         </tr>
                     </thead>
                     <tbody>
@@ -172,26 +189,31 @@ require_once '../../includes/db_connect.php';
                                     echo "<td><span class='fw-bold fs-6'>" . $stock . "</span></td>";
                                     echo "<td>{$expiryBadge}</td>";
                                     echo "<td>{$stockBadge}</td>";
-                                    echo "<td class='text-end pe-4'>
-                                            <div class='d-flex justify-content-end gap-2'>
-                                                <a href='edit.php?id=" . $row['item_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Update Item'>
-                                                    <i class='fa-solid fa-pen-to-square'></i> Update
-                                                </a>
-                                                <a href='delete.php?id=" . $row['item_id'] . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Item' onclick='return confirm(\"Are you sure you want to delete this inventory item?\");'>
-                                                    <i class='fa-solid fa-trash'></i>
-                                                </a>
-                                            </div>
-                                          </td>";
+                                    
+                                    if ($user_role === 'Admin' || $user_role === 'Nurse') {
+                                        echo "<td class='text-end pe-4'>
+                                                <div class='d-flex justify-content-end gap-2'>
+                                                    <a href='edit.php?id=" . $row['item_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Update Item'>
+                                                        <i class='fa-solid fa-pen-to-square'></i> Update
+                                                    </a>
+                                                    <a href='delete.php?id=" . $row['item_id'] . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Item' onclick='return confirm(\"Are you sure you want to delete this inventory item?\");'>
+                                                        <i class='fa-solid fa-trash'></i>
+                                                    </a>
+                                                </div>
+                                              </td>";
+                                    }
                                     echo "</tr>";
                                 }
                             } else {
-                                echo "<tr><td colspan='8' class='text-center text-muted py-5'>
+                                $colSpan = ($user_role === 'Admin' || $user_role === 'Nurse') ? 8 : 7;
+                                echo "<tr><td colspan='{$colSpan}' class='text-center text-muted py-5'>
                                         <i class='fa-solid fa-boxes-stacked fa-3x mb-3 text-secondary opacity-25'></i>
                                         <p class='mb-0 fw-medium'>No inventory items found.</p>
                                       </td></tr>";
                             }
                         } catch (PDOException $e) {
-                            echo "<tr><td colspan='8' class='text-center text-danger py-4'>Error loading inventory data: " . htmlspecialchars($e->getMessage()) . "</td></tr>";
+                            $colSpan = ($user_role === 'Admin' || $user_role === 'Nurse') ? 8 : 7;
+                            echo "<tr><td colspan='{$colSpan}' class='text-center text-danger py-4'>Error loading inventory data: " . htmlspecialchars($e->getMessage()) . "</td></tr>";
                         }
                         ?>
                     </tbody>

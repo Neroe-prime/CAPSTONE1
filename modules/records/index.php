@@ -4,9 +4,15 @@ error_reporting(E_ALL);
 
 session_start();
 if (!isset($_SESSION['user_id'])) {
-    header("Location: ../../index.php");
+    header("Location: ../../index.php?error=Please log in first");
     exit();
 }
+
+// Prevent browser caching after logout so 'Back' button won't show student records
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+
 require_once '../../includes/db_connect.php';
 
 // Fetch current user role for RBAC
@@ -112,7 +118,7 @@ try {
                                     echo "<td class='ps-4'><span class='badge bg-purple bg-opacity-10 text-purple border px-3 py-2 rounded-pill fw-semibold' style='background-color: #f3f0ff !important; color: #6f42c1 !important;'>#" . htmlspecialchars($row['student_id']) . "</span></td>";
                                     echo "<td><strong class='text-dark fs-6'>" . htmlspecialchars($row['first_name'] . ' ' . $row['last_name']) . "</strong></td>";
                                     echo "<td><span class='badge bg-info bg-opacity-10 text-info px-3 py-2 rounded-pill'>" . htmlspecialchars($row['grade_section']) . "</span></td>";
-                                    echo "<td><span class='badge bg-danger bg-opacity-10 text-danger px-3 py-2 rounded-pill'>" . htmlspecialchars($row['medical_history'] ?: 'None') . "</span></td>";
+                                    echo "<td><span class='badge bg-danger bg-opacity-10 text-danger px-2 py-1'>" . htmlspecialchars($row['medical_history'] ?: 'None') . "</span></td>";
                                     echo "<td class='text-muted'>" . $reg_date . "</td>";
                                     
                                     echo "<td class='text-end pe-4'>
@@ -131,7 +137,7 @@ try {
                                     }
                                     
                                     echo "</div>
-                                         </td>";
+                                           </td>";
                                     echo "</tr>";
                                 }
                             } else {
@@ -139,7 +145,7 @@ try {
                                 echo "<tr><td colspan='{$colspan}' class='text-center text-muted py-5'>
                                         <i class='fa-solid fa-user-slash fa-3x mb-3 text-secondary opacity-25'></i>
                                         <p class='mb-0 fw-medium'>No student health records found.</p>
-                                      </td></tr>";
+                                     </td></tr>";
                             }
                         } catch (PDOException $e) {
                             echo "<tr><td colspan='6' class='text-center text-danger py-4'>Error loading student records.</td></tr>";

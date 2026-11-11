@@ -3,6 +3,13 @@ ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 session_start();
+
+// If user is already logged in, redirect them straight to the dashboard
+if (isset($_SESSION['user_id'])) {
+    header("Location: modules/dashboard/index.php");
+    exit();
+}
+
 require_once 'includes/db_connect.php';
 
 $error_msg = '';

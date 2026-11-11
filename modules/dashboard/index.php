@@ -7,13 +7,27 @@ if(!isset($_SESSION['user_id'])){
     header("Location: ../../index.php?error=Please log in first");
     exit();
 }
+
+// Prevent browser caching after logout so 'Back' button won't show the dashboard
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+
 require_once '../../includes/db_connect.php';
+
+// Fetch current user role for RBAC checks
+$user_role = $_SESSION['role'] ?? 'Teacher';
 
 $success_msg = '';
 $error_msg = '';
 
-// Handle Quick-Action Student Registration Form Submission
+// Handle Quick-Action Student Registration Form Submission (Restricted to Admin/Nurse)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_student'])) {
+    if ($user_role === 'Teacher') {
+        header("Location: index.php?error=Unauthorized action for Teacher role");
+        exit();
+    }
+
     $student_id = trim($_POST['new_student_id']);
     $first_name = trim($_POST['first_name']);
     $last_name = trim($_POST['last_name']);
@@ -33,8 +47,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_student'])) {
     }
 }
 
-// Handle Quick-Action Consultation Form Submission with Inventory Deduction
+// Handle Quick-Action Consultation Form Submission with Inventory Deduction (Restricted to Admin/Nurse)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_consultation'])) {
+    if ($user_role === 'Teacher') {
+        header("Location: index.php?error=Unauthorized action for Teacher role");
+        exit();
+    }
+
     $student_id = trim($_POST['student_id']);
     $chief_complaint = trim($_POST['chief_complaint']);
     $symptom_category = trim($_POST['symptom_category']);
@@ -144,6 +163,34 @@ try {
         .chart-container { position: relative; height: 280px; width: 100%; }
         .progress { height: 10px; border-radius: 5px; background-color: #edf2f7; }
 
+        /* Custom HTML Legend Styling */
+        .custom-legend {
+            display: flex;
+            justify-content: center;
+            gap: 25px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #4a5568;
+            user-select: none;
+        }
+        .custom-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: opacity 0.2s ease;
+        }
+        .custom-legend-item.disabled {
+            opacity: 0.4;
+        }
+        .custom-legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
         .table {
             border-collapse: separate;
             border-spacing: 0 10px;
@@ -204,20 +251,23 @@ try {
             </div>
         <?php endif; ?>
 
-        <!-- Dashboard Header with Quick-Action Buttons -->
+        <!-- Dashboard Header with RBAC Quick-Action Buttons -->
         <div class="d-flex justify-content-between align-items-center mb-4 mt-4">
             <div>
                 <h4 class="fw-bold text-dark mb-1">Clinic Dashboard Overview</h4>
                 <p class="text-muted small mb-0">Real-time monitoring, outbreak surveillance, and inventory thresholds.</p>
             </div>
-            <div class="d-flex gap-2">
-                <button type="button" class="btn btn-outline-primary px-3 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newStudentModal">
-                    <i class="fa-solid fa-user-plus me-1"></i> New Student
-                </button>
-                <button type="button" class="btn btn-primary px-4 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newConsultationModal" style="background-color: #6f42c1; border: none;">
-                    <i class="fa-solid fa-plus me-2"></i> New Consultation
-                </button>
-            </div>
+            
+            <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-primary px-3 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newStudentModal">
+                        <i class="fa-solid fa-user-plus me-1"></i> New Student
+                    </button>
+                    <button type="button" class="btn btn-primary px-4 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newConsultationModal" style="background-color: #6f42c1; border: none;">
+                        <i class="fa-solid fa-plus me-2"></i> New Consultation
+                    </button>
+                </div>
+            <?php endif; ?>
         </div>
 
         <div class="alert alert-danger d-flex align-items-center border-0 shadow-sm rounded-4 p-4 mb-4" role="alert" style="background-color: #fff5f5; color: #c53030;">
@@ -276,6 +326,19 @@ try {
                     <h5 class="fw-bold mb-1 text-dark">Outbreak Surveillance (CDC EARS)</h5>
                     <p class="text-muted small mb-3">Live tracking of 'Fever' symptom cases against rolling baseline.</p>
                     <hr class="text-muted opacity-25 mb-4">
+                    
+                    <!-- Custom HTML Legend without strike-through bugs -->
+                    <div class="custom-legend" id="customEarsLegend">
+                        <div class="custom-legend-item" onclick="toggleMainDataset(0)">
+                            <span class="custom-legend-dot" style="background-color: rgba(111, 66, 193, 0.5);"></span>
+                            <span>Expected Baseline (Normal)</span>
+                        </div>
+                        <div class="custom-legend-item" onclick="toggleMainDataset(1)">
+                            <span class="custom-legend-dot" style="background-color: #6f42c1;"></span>
+                            <span>Actual Fever Cases</span>
+                        </div>
+                    </div>
+
                     <div class="chart-container">
                         <canvas id="earsChart"></canvas>
                     </div>
@@ -417,7 +480,8 @@ try {
         </div>
     </div>
 
-    <!-- Quick-Action New Student Modal -->
+    <!-- Quick-Action New Student Modal (Admin / Nurse Only) -->
+    <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
     <div class="modal fade" id="newStudentModal" tabindex="-1" aria-labelledby="newStudentModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-0 rounded-4 shadow-lg">
@@ -464,7 +528,7 @@ try {
         </div>
     </div>
 
-    <!-- Quick-Action New Consultation Modal (Fully Synced with Type-to-Search Student & Searchable Medicine Datalist) -->
+    <!-- Quick-Action New Consultation Modal -->
     <div class="modal fade" id="newConsultationModal" tabindex="-1" aria-labelledby="newConsultationModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-0 rounded-4 shadow-lg">
@@ -510,7 +574,6 @@ try {
                             <textarea name="chief_complaint" class="form-control rounded-3" rows="2" placeholder="e.g., Fever (38.5°C) and body malaise" required></textarea>
                         </div>
                         
-                        <!-- Searchable Inventory Medicine Selector using Datalist -->
                         <div class="row g-2 mb-3">
                             <div class="col-md-8">
                                 <label class="form-label small fw-bold text-muted">DISPENSE MEDICINE / SUPPLY (OPTIONAL)</label>
@@ -555,12 +618,13 @@ try {
             </div>
         </div>
     </div>
+    <?php endif; ?>
 
     <?php include '../../includes/footer.php'; ?>
 
     <script>
         // Live Filter for Recent Consultations Table
-        document.getElementById('tableSearchInput').addEventListener('keyup', function() {
+        document.getElementById('tableSearchInput')?.addEventListener('keyup', function() {
             let filter = this.value.toLowerCase();
             let rows = document.querySelectorAll('#consultationsTable tbody tr');
             rows.forEach(row => {
@@ -586,8 +650,37 @@ try {
                         { label: 'Actual Fever Cases', data: actualFeverCases, borderColor: '#6f42c1', backgroundColor: 'rgba(111, 66, 193, 0.1)', borderWidth: 3, pointBackgroundColor: actualFeverCases.map(v => v >= 3 ? '#e53e3e' : '#6f42c1'), pointBorderColor: '#fff', pointRadius: 5, fill: false, tension: 0.4 }
                     ]
                 },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8, font: { family: 'Segoe UI' } } } }, scales: { y: { beginAtZero: true, grid: { borderDash: [5, 5], color: '#e9ecef' } }, x: { grid: { display: false } } } }
+                options: { 
+                    responsive: true, 
+                    maintainAspectRatio: false, 
+                    plugins: { 
+                        legend: { display: false } 
+                    }, 
+                    scales: { 
+                        y: { beginAtZero: true, grid: { borderDash: [5, 5], color: '#e9ecef' } }, 
+                        x: { grid: { display: false } } 
+                    } 
+                }
             });
+
+            // Custom Legend Toggle for Main Dashboard
+            window.toggleMainDataset = function(index) {
+                const meta = earsChart.getDatasetMeta(index);
+                meta.hidden = meta.hidden === null ? !earsChart.data.datasets[index].hidden : null;
+                earsChart.update();
+
+                const items = document.querySelectorAll('#customEarsLegend .custom-legend-item');
+                const dot = items[index].querySelector('.custom-legend-dot');
+                if (meta.hidden) {
+                    items[index].classList.add('disabled');
+                    dot.style.backgroundColor = 'transparent';
+                    dot.style.border = '2px solid #adb5bd';
+                } else {
+                    items[index].classList.remove('disabled');
+                    dot.style.backgroundColor = index === 0 ? 'rgba(111, 66, 193, 0.5)' : '#6f42c1';
+                    dot.style.border = 'none';
+                }
+            };
         }
     </script>
 </body>

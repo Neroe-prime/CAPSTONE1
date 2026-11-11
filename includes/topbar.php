@@ -2,8 +2,10 @@
 $notif_inventory = [];
 $notif_expiry = [];
 $notif_count = 0;
+$user_role = $_SESSION['role'] ?? 'Teacher';
 
-if (isset($pdo)) {
+// Only query inventory and expiration notifications if the user is an Admin or Nurse
+if (isset($pdo) && $user_role !== 'Teacher') {
     try {
         // Fetch low stock items
         $inv_stmt = $pdo->query("SELECT item_name, current_stock, reorder_level FROM inventory WHERE current_stock <= reorder_level LIMIT 3");
@@ -34,7 +36,8 @@ if (isset($pdo)) {
     </form>
     
     <div class="d-flex align-items-center gap-3">
-        <!-- Notification Dropdown -->
+        <!-- Notification Dropdown (Restricted to Admin and Nurse) -->
+        <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
         <div class="dropdown">
             <button class="btn position-relative dropdown-toggle hide-arrow" type="button" id="notifDropdown" data-bs-toggle="dropdown" aria-expanded="false" style="border: none; background: transparent;">
                 <i class="fa-regular fa-bell fs-5 text-secondary"></i>
@@ -103,6 +106,7 @@ if (isset($pdo)) {
                 <?php endif; ?>
             </ul>
         </div>
+        <?php endif; ?>
         
         <!-- Profile Dropdown -->
         <div class="dropdown">

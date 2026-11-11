@@ -7,6 +7,12 @@ if(!isset($_SESSION['user_id'])){
     header("Location: ../../index.php?error=Please log in first");
     exit();
 }
+
+// Prevent browser caching after logout so 'Back' button won't expose settings
+header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
+header("Cache-Control: post-check=0, pre-check=0", false);
+header("Pragma: no-cache");
+
 require_once '../../includes/db_connect.php';
 
 // Fetch current user data
@@ -315,7 +321,7 @@ if ($current_user['role'] === 'Admin') {
                         </div>
                     </div>
                     <div class="modal-footer border-0 bg-light rounded-bottom-4 p-3">
-                        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-secondary btn-sm px-4 rounded-pill" data-bs-dismiss="modal">Cancel and Close</button>
                         <button type="submit" class="btn btn-primary btn-sm px-4 rounded-pill fw-semibold" style="background: linear-gradient(135deg, #6f42c1 0%, #4e73df 100%); border: none;">Create Account</button>
                     </div>
                 </form>
@@ -324,6 +330,6 @@ if ($current_user['role'] === 'Admin') {
     </div>
 
     <?php include '../../includes/footer.php'; ?>
-    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
