@@ -3,7 +3,7 @@ ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 session_start();
-if(!isset($_SESSION['user_id'])){
+if (!isset($_SESSION['user_id'])) {
     header("Location: ../../index.php?error=Please log in first");
     exit();
 }
@@ -15,24 +15,56 @@ header("Pragma: no-cache");
 
 require_once '../../includes/db_connect.php';
 
-// Fetch current user role for RBAC checks
-$user_role = $_SESSION['role'] ?? 'Teacher';
+// Fetch current user role and username
+$performed_by = $_SESSION['username'] ?? 'Staff';
+try {
+    $u_stmt = $pdo->prepare("SELECT role, username FROM users WHERE user_id = ?");
+    $u_stmt->execute([$_SESSION['user_id']]);
+    $u_row = $u_stmt->fetch(PDO::FETCH_ASSOC);
+    $user_role = $u_row['role'] ?? ($_SESSION['role'] ?? 'Nurse');
+    if (!empty($u_row['username'])) {
+        $performed_by = $u_row['username'];
+    }
+} catch (PDOException $e) {
+    $user_role = $_SESSION['role'] ?? 'Nurse';
+}
+
+if ($user_role !== 'Admin' && $user_role !== 'Nurse') {
+    header("Location: ../../index.php?error=Unauthorized session role");
+    exit();
+}
+
+/**
+ * Automatically compute and update the daily consumption rate for an inventory item
+ * based on recent consultation dispensing history for Holt's Trend model.
+ */
+function updateDashboardConsumptionRate($pdo, $item_id) {
+    $sql = "SELECT SUM(c.quantity_used) as total_dispensed
+            FROM consultations c
+            WHERE c.inventory_item_id = ? AND c.consultation_date >= DATE_SUB(NOW(), INTERVAL 30 DAY)";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([$item_id]);
+    $total_dispensed = (float)($stmt->fetchColumn() ?? 0);
+
+    $daily_rate = 1.00;
+    if ($total_dispensed > 0) {
+        $daily_rate = round($total_dispensed / 30, 2);
+    }
+
+    $update = $pdo->prepare("UPDATE inventory SET daily_consumption_rate = ? WHERE item_id = ?");
+    $update->execute([$daily_rate, $item_id]);
+}
 
 $success_msg = '';
 $error_msg = '';
 
-// Handle Quick-Action Student Registration Form Submission (Restricted to Admin/Nurse)
+// Handle Quick-Action Student Registration Form Submission (Admin / Nurse)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_student'])) {
-    if ($user_role === 'Teacher') {
-        header("Location: index.php?error=Unauthorized action for Teacher role");
-        exit();
-    }
-
-    $student_id = trim($_POST['new_student_id']);
-    $first_name = trim($_POST['first_name']);
-    $last_name = trim($_POST['last_name']);
-    $grade_section = trim($_POST['grade_section']);
-    $gender = trim($_POST['gender']);
+    $student_id = trim($_POST['new_student_id'] ?? '');
+    $first_name = trim($_POST['first_name'] ?? '');
+    $last_name = trim($_POST['last_name'] ?? '');
+    $grade_section = trim($_POST['grade_section'] ?? '');
+    $gender = trim($_POST['gender'] ?? 'Male');
 
     if (!empty($student_id) && !empty($first_name) && !empty($last_name)) {
         try {
@@ -47,61 +79,126 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_student'])) {
     }
 }
 
-// Handle Quick-Action Consultation Form Submission with Inventory Deduction (Restricted to Admin/Nurse)
+// Handle Quick-Action Consultation Form Submission with FOR UPDATE Concurrency Lock & Audit Log
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['quick_consultation'])) {
-    if ($user_role === 'Teacher') {
-        header("Location: index.php?error=Unauthorized action for Teacher role");
-        exit();
-    }
+    $student_id = trim($_POST['student_id'] ?? '');
+    $chief_complaint = trim($_POST['chief_complaint'] ?? '');
+    $symptom_category = trim($_POST['symptom_category'] ?? 'Other');
+    $medication_item = trim($_POST['medication_item'] ?? '');
+    $quantity_used = max(1, (int)($_POST['quantity_used'] ?? 1));
+    $status = trim($_POST['status'] ?? 'Under Observation');
+    $action_taken = trim($_POST['action_taken'] ?? '');
 
-    $student_id = trim($_POST['student_id']);
-    $chief_complaint = trim($_POST['chief_complaint']);
-    $symptom_category = trim($_POST['symptom_category']);
-    $medication_item = trim($_POST['medication_item']);
-    $quantity_used = (int)($_POST['quantity_used'] ?? 1);
-    $status = trim($_POST['status']);
-    $action_taken = trim($_POST['action_taken']);
-
-    // If a medicine was selected, append or set it in action taken
     if (!empty($medication_item)) {
-        $action_taken = !empty($action_taken) ? $action_taken . " | Dispensed: {$medication_item} (Qty: {$quantity_used})" : "Dispensed: {$medication_item} (Qty: {$quantity_used})";
+        $dispense_note = "Dispensed: {$medication_item} (Qty: {$quantity_used})";
+        $action_taken = !empty($action_taken) ? ($action_taken . " | " . $dispense_note) : $dispense_note;
     }
 
     if (!empty($student_id) && !empty($chief_complaint)) {
         try {
             $pdo->beginTransaction();
 
-            // 1. Insert Consultation Record
-            $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status, consultation_date) VALUES (?, ?, ?, ?, ?, NOW())");
-            $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status]);
+            $locked_item = null;
+            $previous_stock = 0;
+            $new_stock = 0;
+            $dispensed_item_id = null;
+            $logged_qty = 0;
 
-            // 2. Automatically Deduct Inventory Stock if a medicine was selected
             if (!empty($medication_item) && $quantity_used > 0) {
-                $inv_stmt = $pdo->prepare("UPDATE inventory SET current_stock = GREATEST(0, current_stock - ?) WHERE item_name = ?");
-                $inv_stmt->execute([$quantity_used, $medication_item]);
+                $lock_stmt = $pdo->prepare("SELECT item_id, item_name, current_stock FROM inventory WHERE item_name = ? FOR UPDATE");
+                $lock_stmt->execute([$medication_item]);
+                $locked_item = $lock_stmt->fetch(PDO::FETCH_ASSOC);
+
+                if (!$locked_item) {
+                    throw new Exception("Selected medicine/supply '{$medication_item}' was not found in inventory.");
+                }
+
+                $previous_stock = (int)$locked_item['current_stock'];
+                if ($previous_stock < $quantity_used) {
+                    throw new Exception("Insufficient stock for {$locked_item['item_name']}. Available: {$previous_stock} pcs, Requested: {$quantity_used} pcs.");
+                }
+
+                $new_stock = $previous_stock - $quantity_used;
+                $dispensed_item_id = (int)$locked_item['item_id'];
+                $logged_qty = $quantity_used;
+
+                $inv_stmt = $pdo->prepare("UPDATE inventory SET current_stock = ? WHERE item_id = ?");
+                $inv_stmt->execute([$new_stock, $dispensed_item_id]);
+            }
+
+            // 1. Insert Consultation Record
+            $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status, inventory_item_id, quantity_used, consultation_date) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())");
+            $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status, $dispensed_item_id, $logged_qty]);
+
+            // 2. Log Inventory Audit Trail & recalculate Holt's daily consumption rate
+            if ($locked_item && $logged_qty > 0) {
+                $audit_stmt = $pdo->prepare("
+                    INSERT INTO inventory_audit 
+                        (item_id, item_name, action_type, quantity, previous_stock, new_stock, reason_or_remarks, performed_by) 
+                    VALUES (?, ?, 'Dispensed', ?, ?, ?, ?, ?)
+                ");
+                $remarks = "Quick Consultation (Dashboard) for Student ID: {$student_id} | Complaint: {$chief_complaint}";
+                $audit_stmt->execute([
+                    $dispensed_item_id,
+                    $locked_item['item_name'],
+                    $logged_qty,
+                    $previous_stock,
+                    $new_stock,
+                    $remarks,
+                    $performed_by
+                ]);
+
+                updateDashboardConsumptionRate($pdo, $dispensed_item_id);
             }
 
             $pdo->commit();
-            $success_msg = "Consultation logged and inventory updated successfully!";
+            $success_msg = "Consultation logged and inventory updated safely!";
         } catch (Exception $e) {
-            $pdo->rollBack();
-            $error_msg = "Database error: " . $e->getMessage();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $error_msg = $e->getMessage();
         }
     } else {
         $error_msg = "Please fill in all required consultation fields.";
     }
 }
 
-// 1. Fetch Dynamic KPI Metrics from Database
+// 1. Fetch Dynamic KPI Metrics & Event-Aware EARS Alert Count
 $visits_today = 0;
 $stock_outs = 0;
+$active_ears_count = 0;
+$event_linked_count = 0;
 
 try {
     $v_stmt = $pdo->query("SELECT COUNT(*) FROM consultations WHERE DATE(consultation_date) = CURDATE()");
-    $visits_today = $v_stmt->fetchColumn();
+    $visits_today = (int)$v_stmt->fetchColumn();
 
     $s_stmt = $pdo->query("SELECT COUNT(*) FROM inventory WHERE current_stock <= reorder_level");
-    $stock_outs = $s_stmt->fetchColumn();
+    $stock_outs = (int)$s_stmt->fetchColumn();
+
+    $recent_events = [];
+    try {
+        $ev_q = $pdo->query("SELECT event_date FROM school_events WHERE event_date >= DATE_SUB(CURDATE(), INTERVAL 8 DAY)");
+        $recent_events = $ev_q->fetchAll(PDO::FETCH_COLUMN);
+    } catch (PDOException $e) {
+        $recent_events = [];
+    }
+
+    $alert_q = $pdo->query("
+        SELECT symptom_category, COUNT(*) as cnt
+        FROM consultations
+        WHERE consultation_date >= NOW() - INTERVAL 7 DAY
+        GROUP BY symptom_category
+        HAVING cnt >= 3
+    ");
+    foreach ($alert_q->fetchAll(PDO::FETCH_ASSOC) as $a_row) {
+        if ($a_row['symptom_category'] === 'Fever' && !empty($recent_events)) {
+            $event_linked_count++;
+        } else {
+            $active_ears_count++;
+        }
+    }
 } catch (PDOException $e) {
     // Handle error silently if tables are empty
 }
@@ -163,7 +260,6 @@ try {
         .chart-container { position: relative; height: 280px; width: 100%; }
         .progress { height: 10px; border-radius: 5px; background-color: #edf2f7; }
 
-        /* Custom HTML Legend Styling */
         .custom-legend {
             display: flex;
             justify-content: center;
@@ -239,44 +335,66 @@ try {
 
         <?php if (!empty($success_msg)): ?>
             <div class="alert alert-success alert-dismissible fade show rounded-4 mb-4 mt-3" role="alert">
-                <i class="fa-solid fa-circle-check me-2"></i> <?php echo $success_msg; ?>
+                <i class="fa-solid fa-circle-check me-2"></i> <?php echo htmlspecialchars($success_msg); ?>
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
         <?php endif; ?>
 
         <?php if (!empty($error_msg)): ?>
             <div class="alert alert-danger alert-dismissible fade show rounded-4 mb-4 mt-3" role="alert">
-                <i class="fa-solid fa-circle-exclamation me-2"></i> <?php echo $error_msg; ?>
+                <i class="fa-solid fa-circle-exclamation me-2"></i> <?php echo htmlspecialchars($error_msg); ?>
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
         <?php endif; ?>
 
-        <!-- Dashboard Header with RBAC Quick-Action Buttons -->
-        <div class="d-flex justify-content-between align-items-center mb-4 mt-4">
+        <!-- Dashboard Header with Quick-Action & Report Shortcuts -->
+        <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 mt-4 gap-3">
             <div>
                 <h4 class="fw-bold text-dark mb-1">Clinic Dashboard Overview</h4>
-                <p class="text-muted small mb-0">Real-time monitoring, outbreak surveillance, and inventory thresholds.</p>
+                <p class="text-muted small mb-0">Real-time monitoring, event-aware outbreak surveillance, stock forecasting, and reports.</p>
             </div>
             
-            <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
-                <div class="d-flex gap-2">
-                    <button type="button" class="btn btn-outline-primary px-3 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newStudentModal">
-                        <i class="fa-solid fa-user-plus me-1"></i> New Student
-                    </button>
-                    <button type="button" class="btn btn-primary px-4 py-2 rounded-pill fw-semibold shadow-sm" data-bs-toggle="modal" data-bs-target="#newConsultationModal" style="background-color: #6f42c1; border: none;">
-                        <i class="fa-solid fa-plus me-2"></i> New Consultation
-                    </button>
-                </div>
-            <?php endif; ?>
-        </div>
-
-        <div class="alert alert-danger d-flex align-items-center border-0 shadow-sm rounded-4 p-4 mb-4" role="alert" style="background-color: #fff5f5; color: #c53030;">
-            <i class="fa-solid fa-triangle-exclamation fs-3 me-3"></i>
-            <div>
-                <h6 class="fw-bold mb-1">EARS ALERT: Anomaly Monitoring Active</h6>
-                <p class="mb-0 small opacity-75">Symptom deviations detected from rolling baseline thresholds. <a href="../analytics/index.php" class="alert-link fw-bold">Click to view report</a>.</p>
+            <div class="d-flex flex-wrap gap-2">
+                <a href="../inventory/index.php" class="btn btn-outline-secondary px-3 py-2 rounded-pill fw-semibold shadow-sm text-nowrap">
+                    <i class="fa-solid fa-clipboard-list me-1"></i> Audit Trail
+                </a>
+                <a href="../analytics/index.php" class="btn btn-outline-secondary px-3 py-2 rounded-pill fw-semibold shadow-sm text-nowrap">
+                    <i class="fa-solid fa-file-lines me-1"></i> Reports
+                </a>
+                <button type="button" class="btn btn-outline-primary px-3 py-2 rounded-pill fw-semibold shadow-sm text-nowrap" data-bs-toggle="modal" data-bs-target="#newStudentModal">
+                    <i class="fa-solid fa-user-plus me-1"></i> New Student
+                </button>
+                <button type="button" class="btn btn-primary px-4 py-2 rounded-pill fw-semibold shadow-sm text-nowrap" data-bs-toggle="modal" data-bs-target="#newConsultationModal" style="background-color: #6f42c1; border: none;">
+                    <i class="fa-solid fa-plus me-2"></i> New Consultation
+                </button>
             </div>
         </div>
+
+        <!-- Dynamic Surveillance & Stock Status Banner -->
+        <?php if ($active_ears_count > 0 || $stock_outs > 0): ?>
+            <div class="alert alert-danger d-flex flex-wrap justify-content-between align-items-center border-0 shadow-sm rounded-4 p-4 mb-4 gap-2" role="alert" style="background-color: #fff5f5; color: #c53030;">
+                <div class="d-flex align-items-center">
+                    <i class="fa-solid fa-triangle-exclamation fs-3 me-3"></i>
+                    <div>
+                        <h6 class="fw-bold mb-1">Clinic Watch: Active Surveillance &amp; Stock Alerts</h6>
+                        <p class="mb-0 small opacity-75">
+                            <?php echo $active_ears_count; ?> aberration alert<?php echo $active_ears_count === 1 ? '' : 's'; ?>
+                            <?php if ($event_linked_count > 0): ?> (<?php echo $event_linked_count; ?> event-correlated)<?php endif; ?>
+                            and <strong><?php echo $stock_outs; ?></strong> low/out-of-stock item<?php echo $stock_outs === 1 ? '' : 's'; ?> detected.
+                            <a href="../analytics/index.php" class="alert-link fw-bold ms-1">View surveillance report</a>.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        <?php else: ?>
+            <div class="alert alert-success d-flex align-items-center border-0 shadow-sm rounded-4 p-4 mb-4" role="alert" style="background-color: #f0fff4; color: #276749;">
+                <i class="fa-solid fa-circle-check fs-3 me-3"></i>
+                <div>
+                    <h6 class="fw-bold mb-1">Clinic Status: All Systems Normal</h6>
+                    <p class="mb-0 small opacity-75">No active EARS outbreak aberrations and all tracked supplies are above reorder thresholds. <a href="../analytics/index.php" class="alert-link fw-bold">Open analytics</a>.</p>
+                </div>
+            </div>
+        <?php endif; ?>
 
         <div class="row g-4">
             <div class="col-md-4">
@@ -298,7 +416,7 @@ try {
                         <div class="d-flex justify-content-between align-items-center">
                             <div>
                                 <h6 class="card-title mb-2">Active EARS Alerts</h6>
-                                <h2 class="mb-0 fw-bold text-danger display-6">1</h2>
+                                <h2 class="mb-0 fw-bold text-danger display-6"><?php echo $active_ears_count; ?></h2>
                             </div>
                             <div class="icon-box bg-light-danger"><i class="fa-solid fa-virus"></i></div>
                         </div>
@@ -327,7 +445,6 @@ try {
                     <p class="text-muted small mb-3">Live tracking of 'Fever' symptom cases against rolling baseline.</p>
                     <hr class="text-muted opacity-25 mb-4">
                     
-                    <!-- Custom HTML Legend without strike-through bugs -->
                     <div class="custom-legend" id="customEarsLegend">
                         <div class="custom-legend-item" onclick="toggleMainDataset(0)">
                             <span class="custom-legend-dot" style="background-color: rgba(111, 66, 193, 0.5);"></span>
@@ -353,7 +470,7 @@ try {
                         
                         <?php
                         $forecast_stmt = $pdo->query("SELECT * FROM inventory ORDER BY current_stock ASC LIMIT 2");
-                        while($f_item = $forecast_stmt->fetch(PDO::FETCH_ASSOC)):
+                        while ($f_item = $forecast_stmt->fetch(PDO::FETCH_ASSOC)):
                             $stock = (int)$f_item['current_stock'];
                             $reorder = (int)$f_item['reorder_level'];
                             $daily_rate = (float)$f_item['daily_consumption_rate'];
@@ -365,37 +482,40 @@ try {
                                 $days_text = "Stable (No Usage)";
                             }
 
-                            if ($stock <= $reorder) {
+                            if ($stock <= 0) {
+                                $bar_color = "bg-dark";
+                                $text_color = "text-dark";
+                                $status_label = "Out of Stock";
+                            } elseif ($stock <= $reorder) {
                                 $bar_color = "bg-danger";
                                 $text_color = "text-danger";
-                            } elseif ($stock <= ($reorder / 2)) {
-                                $bar_color = "bg-warning";
-                                $text_color = "text-warning";
+                                $status_label = "Low Stock";
                             } else {
                                 $bar_color = "bg-success";
                                 $text_color = "text-success";
+                                $status_label = "Sufficient";
                             }
 
                             $max_capacity = $reorder > 0 ? $reorder * 3 : 50; 
                             $width_pct = min(100, max(5, ($stock / $max_capacity) * 100));
                         ?>
                         <div class="mb-4">
-                            <div class="d-flex justify-content-between mb-1">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
                                 <span class="fw-semibold text-dark"><?php echo htmlspecialchars($f_item['item_name']); ?></span>
                                 <span class="<?php echo $text_color; ?> fw-bold small"><i class="fa-solid fa-clock me-1"></i> <?php echo $days_text; ?></span>
                             </div>
                             <div class="progress mb-1">
                                 <div class="progress-bar <?php echo $bar_color; ?>" role="progressbar" style="width: <?php echo $width_pct; ?>%;"></div>
                             </div>
-                            <div class="d-flex justify-content-between">
-                                <small class="text-muted">Current Stock: <?php echo $stock; ?> pcs</small>
-                                <small class="text-muted fst-italic" style="font-size: 0.75rem;">Burn Rate: <?php echo $daily_rate; ?>/day</small>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <small class="text-muted">Stock: <?php echo $stock; ?> pcs &bull; <strong><?php echo $status_label; ?></strong></small>
+                                <small class="text-muted fst-italic" style="font-size: 0.75rem;">Burn: <?php echo $daily_rate; ?>/day</small>
                             </div>
                         </div>
                         <?php endwhile; ?>
                     </div>
 
-                    <a href="../inventory/index.php" class="btn btn-outline-primary w-100 mt-3 py-2 rounded-pill fw-semibold">Manage Inventory</a>
+                    <a href="../inventory/index.php" class="btn btn-outline-primary w-100 mt-3 py-2 rounded-pill fw-semibold">Manage Inventory &amp; Audit</a>
                 </div>
             </div>
         </div>
@@ -405,7 +525,6 @@ try {
                 <div class="card p-4">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h5 class="fw-bold mb-0 text-dark"><i class="fa-solid fa-clock-rotate-left me-2 text-purple" style="color: #6f42c1;"></i> Recent Consultations</h5>
-                        <!-- Live Search Bar Filter -->
                         <div style="width: 280px;">
                             <input type="text" id="tableSearchInput" class="form-control form-control-sm rounded-pill px-3" placeholder="Filter recent table...">
                         </div>
@@ -480,8 +599,7 @@ try {
         </div>
     </div>
 
-    <!-- Quick-Action New Student Modal (Admin / Nurse Only) -->
-    <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
+    <!-- Quick-Action New Student Modal -->
     <div class="modal fade" id="newStudentModal" tabindex="-1" aria-labelledby="newStudentModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content border-0 rounded-4 shadow-lg">
@@ -507,7 +625,7 @@ try {
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small fw-bold text-muted">Grade & Section</label>
+                            <label class="form-label small fw-bold text-muted">Grade &amp; Section</label>
                             <input type="text" name="grade_section" class="form-control rounded-3" placeholder="e.g., BSIT 301A" required>
                         </div>
                         <div class="mb-3">
@@ -543,7 +661,7 @@ try {
                         <input type="hidden" name="quick_consultation" value="1">
                         
                         <div class="mb-3">
-                            <label class="form-label small fw-bold text-muted">SEARCH & SELECT STUDENT</label>
+                            <label class="form-label small fw-bold text-muted">SEARCH &amp; SELECT STUDENT</label>
                             <input class="form-control rounded-3" list="student_list" name="student_id" placeholder="Type student name or ID..." required>
                             <datalist id="student_list">
                                 <?php
@@ -561,7 +679,7 @@ try {
                             <label class="form-label small fw-bold text-muted">SYMPTOM CATEGORY (FOR EARS SURVEILLANCE)</label>
                             <select name="symptom_category" class="form-select rounded-3" required>
                                 <option value="Fever">Fever (Triggers EARS)</option>
-                                <option value="Cough & Cold">Cough & Cold</option>
+                                <option value="Cough & Cold">Cough &amp; Cold</option>
                                 <option value="Headache / Dizziness">Headache / Dizziness</option>
                                 <option value="Stomachache">Stomachache / Acid Reflux</option>
                                 <option value="Injury / Wound">Injury / Wound</option>
@@ -583,7 +701,7 @@ try {
                                     try {
                                         $meds = $pdo->query("SELECT item_name, current_stock FROM inventory WHERE current_stock > 0 ORDER BY item_name ASC");
                                         while ($m = $meds->fetch(PDO::FETCH_ASSOC)) {
-                                            echo '<option value="' . htmlspecialchars($m['item_name']) . '">Stock: ' . $m['current_stock'] . ' pcs</option>';
+                                            echo '<option value="' . htmlspecialchars($m['item_name']) . '">Stock: ' . (int)$m['current_stock'] . ' pcs</option>';
                                         }
                                     } catch (Exception $e) {}
                                     ?>
@@ -612,18 +730,16 @@ try {
                     </div>
                     <div class="modal-footer border-0 pt-0">
                         <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" class="btn btn-primary rounded-pill px-4 shadow-sm" style="background-color: #6f42c1; border:none;">Save & Deduct Stock</button>
+                        <button type="submit" class="btn btn-primary rounded-pill px-4 shadow-sm" style="background-color: #6f42c1; border:none;">Save &amp; Deduct Stock</button>
                     </div>
                 </form>
             </div>
         </div>
     </div>
-    <?php endif; ?>
 
     <?php include '../../includes/footer.php'; ?>
 
     <script>
-        // Live Filter for Recent Consultations Table
         document.getElementById('tableSearchInput')?.addEventListener('keyup', function() {
             let filter = this.value.toLowerCase();
             let rows = document.querySelectorAll('#consultationsTable tbody tr');
@@ -663,7 +779,6 @@ try {
                 }
             });
 
-            // Custom Legend Toggle for Main Dashboard
             window.toggleMainDataset = function(index) {
                 const meta = earsChart.getDatasetMeta(index);
                 meta.hidden = meta.hidden === null ? !earsChart.data.datasets[index].hidden : null;

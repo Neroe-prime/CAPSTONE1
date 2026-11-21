@@ -1,10 +1,16 @@
 <?php
 session_start();
-if(!isset($_SESSION['user_id'])){
+if (!isset($_SESSION['user_id'])) {
     header("Location: ../../index.php?error=Please log in first");
     exit();
 }
 require_once '../../includes/db_connect.php';
+
+$user_role = $_SESSION['role'] ?? 'Nurse';
+if ($user_role !== 'Admin' && $user_role !== 'Nurse') {
+    header("Location: index.php?error=Unauthorized action.");
+    exit();
+}
 
 $item_id = $_GET['id'] ?? '';
 

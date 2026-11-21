@@ -15,14 +15,66 @@ header("Pragma: no-cache");
 
 require_once '../../includes/db_connect.php';
 
-// Fetch current user role for RBAC
+// Fetch current user role
 try {
     $role_stmt = $pdo->prepare("SELECT role FROM users WHERE user_id = ?");
     $role_stmt->execute([$_SESSION['user_id']]);
-    $user_role = $role_stmt->fetchColumn();
+    $user_role = $role_stmt->fetchColumn() ?: ($_SESSION['role'] ?? 'Nurse');
 } catch (PDOException $e) {
-    $user_role = 'Teacher';
+    $user_role = $_SESSION['role'] ?? 'Nurse';
 }
+
+// Filter parameters for Generate Report / Record Filtering
+$filter_section = trim($_GET['grade_section'] ?? '');
+$filter_history = trim($_GET['history_filter'] ?? 'all');
+$filter_search = trim($_GET['q'] ?? '');
+
+// Fetch distinct Grade / Section options for the filter dropdown
+$sections = [];
+try {
+    $sec_stmt = $pdo->query("SELECT DISTINCT grade_section FROM students WHERE grade_section IS NOT NULL AND grade_section != '' ORDER BY grade_section ASC");
+    $sections = $sec_stmt->fetchAll(PDO::FETCH_COLUMN);
+} catch (PDOException $e) {
+    $sections = [];
+}
+
+// Build filtered query for student records
+$students = [];
+$query_error = '';
+try {
+    $sql = "SELECT * FROM students WHERE 1=1";
+    $params = [];
+
+    if ($filter_section !== '') {
+        $sql .= " AND grade_section = ?";
+        $params[] = $filter_section;
+    }
+
+    if ($filter_history === 'with_history') {
+        $sql .= " AND medical_history IS NOT NULL AND TRIM(medical_history) != '' AND LOWER(TRIM(medical_history)) NOT IN ('none', 'n/a', 'na', 'none noted')";
+    } elseif ($filter_history === 'no_history') {
+        $sql .= " AND (medical_history IS NULL OR TRIM(medical_history) = '' OR LOWER(TRIM(medical_history)) IN ('none', 'n/a', 'na', 'none noted'))";
+    }
+
+    if ($filter_search !== '') {
+        $sql .= " AND (CAST(student_id AS CHAR) LIKE ? OR first_name LIKE ? OR last_name LIKE ? OR CONCAT(first_name, ' ', last_name) LIKE ? OR medical_history LIKE ?)";
+        $like = '%' . $filter_search . '%';
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+    }
+
+    $sql .= " ORDER BY student_id DESC";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $query_error = "Error loading student records.";
+}
+
+$has_active_filters = ($filter_section !== '' || $filter_history !== 'all' || $filter_search !== '');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -54,6 +106,18 @@ try {
         .btn-action-edit:hover { background-color: #d69e2e; color: white; }
         .btn-action-delete { background-color: #fff5f5; color: #e53e3e; border: none; border-radius: 10px; transition: all 0.2s; }
         .btn-action-delete:hover { background-color: #e53e3e; color: white; }
+
+        .print-report-header { display: none; }
+
+        @media print {
+            .sidebar, .top-navbar, .no-print, .btn, .alert { display: none !important; }
+            .main-content { margin-left: 0 !important; width: 100% !important; padding: 15px !important; }
+            .card { box-shadow: none !important; border: 1px solid #dee2e6 !important; }
+            .print-report-header { display: block !important; margin-bottom: 20px; border-bottom: 2px solid #2d3748; padding-bottom: 12px; }
+            .table { border-collapse: collapse !important; border-spacing: 0 !important; }
+            .table tbody tr { box-shadow: none !important; }
+            .table tbody td { border: 1px solid #dee2e6 !important; border-radius: 0 !important; }
+        }
     </style>
 </head>
 <body>
@@ -61,39 +125,97 @@ try {
     <div class="main-content">
         <?php include '../../includes/topbar.php'; ?>
 
+        <!-- Print-Only Official Report Header -->
+        <div class="print-report-header">
+            <h3 class="fw-bold mb-1">MedFlow — Student Health Records Report</h3>
+            <p class="text-muted small mb-0">
+                Generated on: <?php echo date('F d, Y h:i A'); ?> | Total Matching Records: <strong><?php echo count($students); ?></strong>
+                <?php if ($filter_section !== ''): ?> | Grade/Section: <strong><?php echo htmlspecialchars($filter_section); ?></strong><?php endif; ?>
+                <?php if ($filter_history !== 'all'): ?> | Medical History Filter: <strong><?php echo htmlspecialchars($filter_history === 'with_history' ? 'With History / Allergies' : 'No History / None'); ?></strong><?php endif; ?>
+                <?php if ($filter_search !== ''): ?> | Keyword: <strong><?php echo htmlspecialchars($filter_search); ?></strong><?php endif; ?>
+            </p>
+        </div>
+
         <!-- Header Banner -->
         <div class="card bg-gradient-purple p-5 mb-5 shadow-sm mt-3">
-            <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
                 <div>
                     <h2 class="fw-bold mb-2 text-white"><i class="fa-solid fa-user-injured me-3"></i> Student Health Records</h2>
-                    <p class="text-white-50 fs-6 mb-0">Manage registered student profiles, medical histories, and clinical records smoothly.</p>
+                    <p class="text-white-50 fs-6 mb-0">Manage registered student profiles, medical histories, and printable health reports.</p>
                 </div>
-                <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
-                    <a href="register.php" class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill">
-                        <i class="fa-solid fa-user-plus me-2"></i> Register Student
-                    </a>
-                <?php else: ?>
-                    <span class="badge bg-light text-dark px-4 py-3 rounded-pill fw-semibold shadow-sm">
-                        <i class="fa-solid fa-eye me-2 text-primary"></i> View-Only Access
-                    </span>
-                <?php endif; ?>
+                <div class="d-flex flex-wrap gap-2 no-print">
+                    <button type="button" class="btn btn-outline-light fw-bold px-4 py-3 rounded-pill shadow-sm text-nowrap" onclick="window.print();">
+                        <i class="fa-solid fa-file-pdf me-2"></i> Generate / Print Report
+                    </button>
+                    <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
+                        <a href="register.php" class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill text-nowrap">
+                            <i class="fa-solid fa-user-plus me-2"></i> Register Student
+                        </a>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
 
         <?php if (isset($_GET['success'])): ?>
-            <div class="alert alert-success shadow-sm border-0 rounded-4 p-4 mb-4">
+            <div class="alert alert-success shadow-sm border-0 rounded-4 p-4 mb-4 no-print">
                 <i class="fa-solid fa-circle-check me-2"></i> <?php echo htmlspecialchars($_GET['success']); ?>
             </div>
         <?php endif; ?>
 
         <?php if (isset($_GET['error'])): ?>
-            <div class="alert alert-danger shadow-sm border-0 rounded-4 p-4 mb-4">
+            <div class="alert alert-danger shadow-sm border-0 rounded-4 p-4 mb-4 no-print">
                 <i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo htmlspecialchars($_GET['error']); ?>
             </div>
         <?php endif; ?>
 
+        <!-- Filter & Report Criteria Card -->
+        <div class="card p-4 mb-4 no-print">
+            <form method="GET" action="" class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Grade / Section</label>
+                    <select name="grade_section" class="form-select rounded-3">
+                        <option value="">All Grade / Sections</option>
+                        <?php foreach ($sections as $sec): ?>
+                            <option value="<?php echo htmlspecialchars($sec); ?>" <?php echo $filter_section === $sec ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($sec); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Medical History / Allergies</label>
+                    <select name="history_filter" class="form-select rounded-3">
+                        <option value="all" <?php echo $filter_history === 'all' ? 'selected' : ''; ?>>All Students</option>
+                        <option value="with_history" <?php echo $filter_history === 'with_history' ? 'selected' : ''; ?>>With Recorded History / Allergies</option>
+                        <option value="no_history" <?php echo $filter_history === 'no_history' ? 'selected' : ''; ?>>No History / None</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Search Name, ID, or Allergy</label>
+                    <input type="text" name="q" class="form-control rounded-3" value="<?php echo htmlspecialchars($filter_search); ?>" placeholder="e.g., Asthma or 2026-...">
+                </div>
+                <div class="col-md-3 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary rounded-pill px-4 py-2 fw-semibold flex-grow-1" style="background: linear-gradient(135deg, #6f42c1 0%, #4e73df 100%); border: none;">
+                        <i class="fa-solid fa-filter me-1"></i> Apply Filter
+                    </button>
+                    <?php if ($has_active_filters): ?>
+                        <a href="index.php" class="btn btn-light rounded-pill px-3 py-2 fw-semibold" title="Reset Filters">
+                            <i class="fa-solid fa-rotate-left"></i>
+                        </a>
+                    <?php endif; ?>
+                </div>
+            </form>
+        </div>
+
         <!-- Students Table Card -->
         <div class="card p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <span class="text-muted small fw-semibold">
+                    Showing <strong><?php echo count($students); ?></strong> student record<?php echo count($students) === 1 ? '' : 's'; ?>
+                    <?php if ($has_active_filters): ?>(Filtered Report View)<?php endif; ?>
+                </span>
+            </div>
+
             <div class="table-responsive">
                 <table class="table align-middle mb-0">
                     <thead>
@@ -103,52 +225,53 @@ try {
                             <th>Grade / Section</th>
                             <th>Medical History / Allergies</th>
                             <th>Date Registered</th>
-                            <th class="text-end pe-4">Actions</th>
+                            <th class="text-end pe-4 no-print">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php
-                        try {
-                            $stmt = $pdo->query("SELECT * FROM students ORDER BY student_id DESC");
-                            if ($stmt->rowCount() > 0) {
-                                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-                                    $reg_date = !empty($row['created_at']) ? date('M d, Y', strtotime($row['created_at'])) : 'Oct 22, 2026';
-                                    
-                                    echo "<tr>";
-                                    echo "<td class='ps-4'><span class='badge bg-purple bg-opacity-10 text-purple border px-3 py-2 rounded-pill fw-semibold' style='background-color: #f3f0ff !important; color: #6f42c1 !important;'>#" . htmlspecialchars($row['student_id']) . "</span></td>";
-                                    echo "<td><strong class='text-dark fs-6'>" . htmlspecialchars($row['first_name'] . ' ' . $row['last_name']) . "</strong></td>";
-                                    echo "<td><span class='badge bg-info bg-opacity-10 text-info px-3 py-2 rounded-pill'>" . htmlspecialchars($row['grade_section']) . "</span></td>";
-                                    echo "<td><span class='badge bg-danger bg-opacity-10 text-danger px-2 py-1'>" . htmlspecialchars($row['medical_history'] ?: 'None') . "</span></td>";
-                                    echo "<td class='text-muted'>" . $reg_date . "</td>";
-                                    
-                                    echo "<td class='text-end pe-4'>
-                                            <div class='d-flex justify-content-end gap-2'>
-                                                <a href='view.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-action-view px-3 py-2' title='View Profile'>
-                                                    <i class='fa-solid fa-eye'></i>
-                                                </a>";
-                                                
-                                    if ($user_role === 'Admin' || $user_role === 'Nurse') {
-                                        echo "<a href='edit.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Edit Record'>
-                                                <i class='fa-solid fa-pen-to-square'></i>
-                                              </a>
-                                              <a href='delete.php?id=" . $row['student_id'] . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Record' onclick='return confirm(\"Are you sure you want to delete this student record?\");'>
-                                                <i class='fa-solid fa-trash'></i>
-                                              </a>";
-                                    }
-                                    
-                                    echo "</div>
-                                           </td>";
-                                    echo "</tr>";
+                        if ($query_error !== '') {
+                            echo "<tr><td colspan='6' class='text-center text-danger py-4'>" . htmlspecialchars($query_error) . "</td></tr>";
+                        } elseif (count($students) > 0) {
+                            foreach ($students as $row) {
+                                $reg_date = !empty($row['created_at']) ? date('M d, Y', strtotime($row['created_at'])) : 'Oct 22, 2026';
+                                $med_text = trim((string)($row['medical_history'] ?? ''));
+                                $has_med = ($med_text !== '' && !in_array(strtolower($med_text), ['none', 'n/a', 'na', 'none noted'], true));
+                                $med_badge_class = $has_med
+                                    ? 'bg-danger bg-opacity-10 text-danger border border-danger-subtle'
+                                    : 'bg-secondary bg-opacity-10 text-secondary';
+
+                                echo "<tr>";
+                                echo "<td class='ps-4'><span class='badge bg-purple bg-opacity-10 text-purple border px-3 py-2 rounded-pill fw-semibold' style='background-color: #f3f0ff !important; color: #6f42c1 !important;'>#" . htmlspecialchars($row['student_id']) . "</span></td>";
+                                echo "<td><strong class='text-dark fs-6'>" . htmlspecialchars($row['first_name'] . ' ' . $row['last_name']) . "</strong></td>";
+                                echo "<td><span class='badge bg-info bg-opacity-10 text-info px-3 py-2 rounded-pill'>" . htmlspecialchars($row['grade_section']) . "</span></td>";
+                                echo "<td><span class='badge {$med_badge_class} px-3 py-2 rounded-pill'>" . htmlspecialchars($med_text !== '' ? $med_text : 'None') . "</span></td>";
+                                echo "<td class='text-muted'>" . htmlspecialchars($reg_date) . "</td>";
+                                
+                                echo "<td class='text-end pe-4 no-print'>
+                                        <div class='d-flex justify-content-end gap-2'>
+                                            <a href='view.php?id=" . urlencode($row['student_id']) . "' class='btn btn-sm btn-action-view px-3 py-2' title='View Profile'>
+                                                <i class='fa-solid fa-eye'></i>
+                                            </a>";
+                                            
+                                if ($user_role === 'Admin' || $user_role === 'Nurse') {
+                                    echo "<a href='edit.php?id=" . urlencode($row['student_id']) . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Edit Record'>
+                                            <i class='fa-solid fa-pen-to-square'></i>
+                                          </a>
+                                          <a href='delete.php?id=" . urlencode($row['student_id']) . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Record' onclick='return confirm(\"Are you sure you want to delete this student record?\");'>
+                                            <i class='fa-solid fa-trash'></i>
+                                          </a>";
                                 }
-                            } else {
-                                $colspan = ($user_role === 'Admin' || $user_role === 'Nurse') ? 6 : 5;
-                                echo "<tr><td colspan='{$colspan}' class='text-center text-muted py-5'>
-                                        <i class='fa-solid fa-user-slash fa-3x mb-3 text-secondary opacity-25'></i>
-                                        <p class='mb-0 fw-medium'>No student health records found.</p>
-                                     </td></tr>";
+                                
+                                echo "</div>
+                                       </td>";
+                                echo "</tr>";
                             }
-                        } catch (PDOException $e) {
-                            echo "<tr><td colspan='6' class='text-center text-danger py-4'>Error loading student records.</td></tr>";
+                        } else {
+                            echo "<tr><td colspan='6' class='text-center text-muted py-5'>
+                                    <i class='fa-solid fa-user-slash fa-3x mb-3 text-secondary opacity-25'></i>
+                                    <p class='mb-0 fw-medium'>No matching student health records found.</p>
+                                 </td></tr>";
                         }
                         ?>
                     </tbody>

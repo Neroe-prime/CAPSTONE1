@@ -1,5 +1,5 @@
 <?php
-$role = $_SESSION['role'] ?? 'Teacher'; // Default to lowest privilege if not set
+$role = $_SESSION['role'] ?? 'Nurse';
 ?>
 <div class="sidebar d-flex flex-column justify-content-between">
     <div>
@@ -19,7 +19,7 @@ $role = $_SESSION['role'] ?? 'Teacher'; // Default to lowest privilege if not se
             <i class="fa-solid fa-stethoscope"></i> Consultations
         </a>
         
-        <!-- Only Admin and Nurse can see Inventory and Analytics -->
+        <!-- Admin and Nurse access to Inventory and Analytics -->
         <?php if ($role === 'Admin' || $role === 'Nurse'): ?>
         <a href="../../modules/inventory/index.php">
             <i class="fa-solid fa-box-open"></i> Inventory

@@ -8,7 +8,7 @@ if (!isset($_SESSION['user_id'])) {
 require_once '../../includes/db_connect.php';
 
 // Ensure only an Admin can create accounts
-if ($_SESSION['role'] !== 'Admin') {
+if (($_SESSION['role'] ?? '') !== 'Admin') {
     header("Location: index.php?error=Unauthorized action");
     exit();
 }
@@ -16,11 +16,12 @@ if ($_SESSION['role'] !== 'Admin') {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim($_POST['new_username'] ?? '');
     $password = $_POST['new_password'] ?? '';
-    $role = $_POST['new_role'] ?? 'Teacher';
+    $role = trim($_POST['new_role'] ?? '');
 
-    // 1. Validation
-    if (empty($username) || empty($password) || empty($role)) {
-        header("Location: index.php?error=All fields are required");
+    // 1. Validation & allowed roles check (Admin / Nurse only)
+    $allowed_roles = ['Admin', 'Nurse'];
+    if (empty($username) || empty($password) || !in_array($role, $allowed_roles, true)) {
+        header("Location: index.php?error=Valid username, password, and role (Admin or Nurse) are required");
         exit();
     }
 

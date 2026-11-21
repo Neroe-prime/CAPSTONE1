@@ -9,13 +9,18 @@ if (!isset($_SESSION['user_id'])) {
 }
 require_once '../../includes/db_connect.php';
 
-// Fetch current user role for RBAC
+// Fetch current user role and username
+$performed_by = $_SESSION['username'] ?? 'Staff';
 try {
-    $role_stmt = $pdo->prepare("SELECT role FROM users WHERE user_id = ?");
+    $role_stmt = $pdo->prepare("SELECT role, username FROM users WHERE user_id = ?");
     $role_stmt->execute([$_SESSION['user_id']]);
-    $user_role = $role_stmt->fetchColumn();
+    $u_row = $role_stmt->fetch(PDO::FETCH_ASSOC);
+    $user_role = $u_row['role'] ?? ($_SESSION['role'] ?? 'Nurse');
+    if (!empty($u_row['username'])) {
+        $performed_by = $u_row['username'];
+    }
 } catch (PDOException $e) {
-    $user_role = 'Teacher';
+    $user_role = $_SESSION['role'] ?? 'Nurse';
 }
 
 // Restrict access to Admin and Nurse only
@@ -29,7 +34,7 @@ $error_msg = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $item_name = trim($_POST['item_name'] ?? '');
     $batch_number = trim($_POST['batch_number'] ?? '');
-    $current_stock = !empty($_POST['current_stock']) ? (int)$_POST['current_stock'] : 0;
+    $current_stock = !empty($_POST['current_stock']) ? max(0, (int)$_POST['current_stock']) : 0;
     $initial_stock = $current_stock; // Initial stock matches starting current stock
     $expiration_date = $_POST['expiration_date'] ?? null;
     $reorder_level = 15; // Fixed system-wide policy threshold for reorder alerts
@@ -39,12 +44,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_msg = "Item name, batch number, and expiration date are required.";
     } else {
         try {
+            $pdo->beginTransaction();
+
             $stmt = $pdo->prepare("INSERT INTO inventory (item_name, batch_number, current_stock, initial_stock, expiration_date, reorder_level, daily_consumption_rate) VALUES (?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$item_name, $batch_number, $current_stock, $initial_stock, $expiration_date, $reorder_level, $daily_consumption]);
-            
+            $new_item_id = (int)$pdo->lastInsertId();
+
+            if ($current_stock > 0) {
+                $audit_stmt = $pdo->prepare("
+                    INSERT INTO inventory_audit 
+                        (item_id, item_name, action_type, quantity, previous_stock, new_stock, reason_or_remarks, performed_by) 
+                    VALUES (?, ?, 'Restocked', ?, 0, ?, ?, ?)
+                ");
+                $audit_stmt->execute([
+                    $new_item_id,
+                    $item_name,
+                    $current_stock,
+                    $current_stock,
+                    "Initial stock registration (Batch: {$batch_number})",
+                    $performed_by
+                ]);
+            }
+
+            $pdo->commit();
             header("Location: index.php?success=Inventory item added successfully with fixed alert policy!");
             exit();
         } catch (PDOException $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $error_msg = "Database Error: " . $e->getMessage();
         }
     }
@@ -121,7 +149,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <div class="mb-4">
                     <label class="form-label text-muted small fw-bold text-uppercase">Critical Reorder Level (System Policy)</label>
                     <input type="number" class="form-control bg-light text-muted" value="15" readonly title="System reorder thresholds are fixed by institutional clinic policy and cannot be altered.">
-                    <div class="form-text text-muted small mt-1"><i class="fa-solid fa-lock me-1"></i> Fixed rule: Alerts trigger automatically when stock falls below 15 units.</div>
+                    <div class="form-text text-muted small mt-1"><i class="fa-solid fa-lock me-1"></i> Fixed rule: Alerts trigger automatically when stock falls to or below 15 units.</div>
                 </div>
 
                 <div class="d-flex justify-content-end gap-3 pt-3 border-top">

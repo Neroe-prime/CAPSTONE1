@@ -3,7 +3,7 @@ ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 session_start();
-if(!isset($_SESSION['user_id'])){
+if (!isset($_SESSION['user_id'])) {
     header("Location: ../../index.php?error=Please log in first");
     exit();
 }
@@ -15,13 +15,18 @@ header("Pragma: no-cache");
 
 require_once '../../includes/db_connect.php';
 
-// Fetch current user role for RBAC
+// Fetch current user role and username for RBAC and audit trail
+$performed_by = $_SESSION['username'] ?? 'Staff';
 try {
-    $role_stmt = $pdo->prepare("SELECT role FROM users WHERE user_id = ?");
+    $role_stmt = $pdo->prepare("SELECT role, username FROM users WHERE user_id = ?");
     $role_stmt->execute([$_SESSION['user_id']]);
-    $user_role = $role_stmt->fetchColumn();
+    $user_row = $role_stmt->fetch(PDO::FETCH_ASSOC);
+    $user_role = $user_row['role'] ?? ($_SESSION['role'] ?? 'Nurse');
+    if (!empty($user_row['username'])) {
+        $performed_by = $user_row['username'];
+    }
 } catch (PDOException $e) {
-    $user_role = 'Teacher';
+    $user_role = $_SESSION['role'] ?? 'Nurse';
 }
 
 /**
@@ -65,29 +70,126 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     $inventory_item_id = !empty($_POST['inventory_item_id']) ? (int)$_POST['inventory_item_id'] : null;
     $quantity_used = !empty($_POST['quantity_used']) ? (int)$_POST['quantity_used'] : 0;
 
-    try {
-        $pdo->beginTransaction();
+    if ($inventory_item_id && $quantity_used <= 0) {
+        $error_msg = "Quantity dispensed must be at least 1.";
+    } else {
+        try {
+            $pdo->beginTransaction();
 
-        // 1. Insert consultation log (including inventory tracking fields)
-        $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status, inventory_item_id, quantity_used) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status, $inventory_item_id, $quantity_used]);
+            $locked_item = null;
+            $previous_stock = 0;
+            $new_stock = 0;
 
-        // 2. If medicine was dispensed, automatically deduct from inventory and update consumption rate
-        if ($inventory_item_id && $quantity_used > 0) {
-            $update_inv = $pdo->prepare("UPDATE inventory SET current_stock = GREATEST(0, current_stock - ?) WHERE item_id = ?");
-            $update_inv->execute([$quantity_used, $inventory_item_id]);
+            // Lock the inventory row first to prevent race conditions / negative stock
+            if ($inventory_item_id && $quantity_used > 0) {
+                $lock_stmt = $pdo->prepare("SELECT item_id, item_name, current_stock FROM inventory WHERE item_id = ? FOR UPDATE");
+                $lock_stmt->execute([$inventory_item_id]);
+                $locked_item = $lock_stmt->fetch(PDO::FETCH_ASSOC);
 
-            // Automatically recalculate the daily consumption rate for Holt's model
-            updateInventoryConsumptionRate($pdo, $inventory_item_id);
+                if (!$locked_item) {
+                    throw new Exception("Selected medicine/supply item was not found in inventory.");
+                }
+
+                $previous_stock = (int)$locked_item['current_stock'];
+                if ($previous_stock < $quantity_used) {
+                    throw new Exception("Insufficient stock for {$locked_item['item_name']}. Available: {$previous_stock} pcs, Requested: {$quantity_used} pcs.");
+                }
+
+                $new_stock = $previous_stock - $quantity_used;
+
+                $update_inv = $pdo->prepare("UPDATE inventory SET current_stock = ? WHERE item_id = ?");
+                $update_inv->execute([$new_stock, $inventory_item_id]);
+            }
+
+            // 1. Insert consultation log
+            $stmt = $pdo->prepare("INSERT INTO consultations (student_id, chief_complaint, symptom_category, action_taken, status, inventory_item_id, quantity_used) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$student_id, $chief_complaint, $symptom_category, $action_taken, $status, $inventory_item_id, $quantity_used]);
+
+            // 2. Record audit trail & recalculate Holt's daily consumption rate if dispensed
+            if ($locked_item && $quantity_used > 0) {
+                $audit_stmt = $pdo->prepare("
+                    INSERT INTO inventory_audit 
+                        (item_id, item_name, action_type, quantity, previous_stock, new_stock, reason_or_remarks, performed_by) 
+                    VALUES (?, ?, 'Dispensed', ?, ?, ?, ?, ?)
+                ");
+                $remarks = "Consultation for Student ID: {$student_id} | Complaint: {$chief_complaint}";
+                $audit_stmt->execute([
+                    $locked_item['item_id'],
+                    $locked_item['item_name'],
+                    $quantity_used,
+                    $previous_stock,
+                    $new_stock,
+                    $remarks,
+                    $performed_by
+                ]);
+
+                updateInventoryConsumptionRate($pdo, $inventory_item_id);
+            }
+
+            $pdo->commit();
+            $success_msg = "Consultation successfully logged, inventory updated safely, and consumption rate recalculated!";
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $error_msg = $e->getMessage();
         }
-
-        $pdo->commit();
-        $success_msg = "Consultation successfully logged, inventory updated, and consumption rate recalculated!";
-    } catch (PDOException $e) {
-        $pdo->rollBack();
-        $error_msg = "Error: " . $e->getMessage();
     }
 }
+
+// Report Filter Parameters
+$date_from = trim($_GET['date_from'] ?? '');
+$date_to = trim($_GET['date_to'] ?? '');
+$filter_category = trim($_GET['symptom_category'] ?? '');
+$filter_status = trim($_GET['status'] ?? '');
+$filter_search = trim($_GET['q'] ?? '');
+
+$consultations = [];
+$query_error = '';
+try {
+    $sql = "
+        SELECT c.*, s.first_name, s.last_name, s.grade_section 
+        FROM consultations c
+        JOIN students s ON c.student_id = s.student_id
+        WHERE 1=1
+    ";
+    $params = [];
+
+    if ($date_from !== '') {
+        $sql .= " AND DATE(c.consultation_date) >= ?";
+        $params[] = $date_from;
+    }
+    if ($date_to !== '') {
+        $sql .= " AND DATE(c.consultation_date) <= ?";
+        $params[] = $date_to;
+    }
+    if ($filter_category !== '') {
+        $sql .= " AND c.symptom_category = ?";
+        $params[] = $filter_category;
+    }
+    if ($filter_status !== '') {
+        $sql .= " AND c.status = ?";
+        $params[] = $filter_status;
+    }
+    if ($filter_search !== '') {
+        $sql .= " AND (s.first_name LIKE ? OR s.last_name LIKE ? OR CONCAT(s.first_name, ' ', s.last_name) LIKE ? OR s.grade_section LIKE ? OR c.chief_complaint LIKE ?)";
+        $like = '%' . $filter_search . '%';
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+        $params[] = $like;
+    }
+
+    $sql .= " ORDER BY c.consultation_date DESC";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $consultations = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $query_error = "Error loading consultation records.";
+}
+
+$has_active_filters = ($date_from !== '' || $date_to !== '' || $filter_category !== '' || $filter_status !== '' || $filter_search !== '');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -101,26 +203,21 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     <style>
         body { background-color: #f4f5fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
         
-        /* Sidebar Styles */
         .sidebar { width: 250px; height: 100vh; background-color: #1a252f; color: #ecf0f1; position: fixed; padding-top: 20px; top: 0; left: 0; z-index: 1000; }
         .sidebar .brand { font-size: 1.5rem; font-weight: bold; text-align: center; margin-bottom: 30px; color: #3498db; }
         .sidebar a { padding: 15px 25px; text-decoration: none; font-size: 1.1rem; color: #bdc3c7; display: block; transition: 0.3s; }
         .sidebar a:hover, .sidebar a.active { color: #ffffff; background-color: #2c3e50; border-left: 4px solid #3498db; }
         .sidebar a i { margin-right: 10px; width: 20px; text-align: center; }
         
-        /* Spacious Main Content Styles */
         .main-content { margin-left: 250px; padding: 45px; width: calc(100% - 250px); }
-        
         .card { border: none; border-radius: 20px; box-shadow: 0 8px 25px rgba(111, 66, 193, 0.07); background-color: #ffffff; }
         
-        /* Purple Gradient Banner */
         .bg-gradient-purple {
             background: linear-gradient(135deg, #6f42c1 0%, #4e73df 100%);
             color: white;
             border-radius: 20px;
         }
 
-        /* Spacious Table Styling */
         .table {
             border-collapse: separate;
             border-spacing: 0 12px;
@@ -159,7 +256,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
             border-bottom-right-radius: 14px;
         }
 
-        /* Action Buttons */
         .btn-action-edit { background-color: #fefcbf; color: #d69e2e; border: none; border-radius: 10px; transition: all 0.2s; }
         .btn-action-edit:hover { background-color: #d69e2e; color: white; }
         
@@ -177,57 +273,138 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
             border-color: #6f42c1;
             box-shadow: 0 0 0 4px rgba(111, 66, 193, 0.1);
         }
+
+        .print-report-header { display: none; }
+
+        @media print {
+            .sidebar, .top-navbar, .no-print, .btn, .alert { display: none !important; }
+            .main-content { margin-left: 0 !important; width: 100% !important; padding: 15px !important; }
+            .card { box-shadow: none !important; border: 1px solid #dee2e6 !important; }
+            .print-report-header { display: block !important; margin-bottom: 20px; border-bottom: 2px solid #2d3748; padding-bottom: 12px; }
+            .table { border-collapse: collapse !important; border-spacing: 0 !important; }
+            .table tbody tr { box-shadow: none !important; }
+            .table tbody td { border: 1px solid #dee2e6 !important; border-radius: 0 !important; padding: 10px !important; }
+        }
     </style>
 </head>
 <body>
 
-    <!-- INJECT SIDEBAR -->
     <?php include '../../includes/sidebar.php'; ?>
 
     <div class="main-content">
-        <!-- INJECT TOPBAR -->
         <?php include '../../includes/topbar.php'; ?>
 
+        <!-- Print-Only Official Report Header -->
+        <div class="print-report-header">
+            <h3 class="fw-bold mb-1">MedFlow — Clinic Consultations Report</h3>
+            <p class="text-muted small mb-0">
+                Generated on: <?php echo date('F d, Y h:i A'); ?> | Total Consultations: <strong><?php echo count($consultations); ?></strong>
+                <?php if ($date_from !== '' || $date_to !== ''): ?> | Date Range: <strong><?php echo htmlspecialchars(($date_from ?: 'Start') . ' to ' . ($date_to ?: 'Present')); ?></strong><?php endif; ?>
+                <?php if ($filter_category !== ''): ?> | Category: <strong><?php echo htmlspecialchars($filter_category); ?></strong><?php endif; ?>
+                <?php if ($filter_status !== ''): ?> | Status: <strong><?php echo htmlspecialchars($filter_status); ?></strong><?php endif; ?>
+            </p>
+        </div>
+
         <div class="card bg-gradient-purple p-5 mb-5 shadow-sm mt-3">
-            <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
                 <div>
                     <h2 class="fw-bold mb-2 text-white"><i class="fa-solid fa-stethoscope me-3"></i> Clinic Consultations Log</h2>
-                    <p class="text-white-50 fs-6 mb-0">Record student visits, symptoms, and automatically deduct dispensed medicines from inventory.</p>
+                    <p class="text-white-50 fs-6 mb-0">Record student visits, filter reports by date or symptom, and safely deduct dispensed inventory.</p>
                 </div>
                 
-                <div class="d-flex gap-2">
+                <div class="d-flex flex-wrap gap-2 no-print">
+                    <button type="button" class="btn btn-outline-light fw-bold px-4 py-3 shadow-sm rounded-pill text-nowrap" onclick="window.print();">
+                        <i class="fa-solid fa-file-pdf me-2"></i> Generate / Print Report
+                    </button>
                     <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
-                        <a href="export.php" class="btn btn-outline-light fw-bold px-4 py-3 shadow-sm rounded-pill">
+                        <a href="export.php" class="btn btn-outline-light fw-bold px-4 py-3 shadow-sm rounded-pill text-nowrap">
                             <i class="fa-solid fa-file-arrow-down me-2"></i> Export CSV
                         </a>
-                        <button class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill" data-bs-toggle="modal" data-bs-target="#addConsultationModal">
+                        <button class="btn btn-light fw-bold px-4 py-3 shadow text-primary rounded-pill text-nowrap" data-bs-toggle="modal" data-bs-target="#addConsultationModal">
                             <i class="fa-solid fa-plus me-2"></i> Log New Visit
                         </button>
-                    <?php else: ?>
-                        <span class="badge bg-light text-dark px-4 py-3 rounded-pill fw-semibold shadow-sm">
-                            <i class="fa-solid fa-eye me-2 text-primary"></i> View-Only Access
-                        </span>
                     <?php endif; ?>
                 </div>
             </div>
         </div>
 
-        <?php if(isset($success_msg)): ?>
-            <div class="alert alert-success alert-dismissible fade show rounded-4 p-4 mb-4 shadow-sm border-0" role="alert">
-                <i class="fa-solid fa-circle-check me-2"></i> <?php echo $success_msg; ?>
+        <?php if (isset($success_msg)): ?>
+            <div class="alert alert-success alert-dismissible fade show rounded-4 p-4 mb-4 shadow-sm border-0 no-print" role="alert">
+                <i class="fa-solid fa-circle-check me-2"></i> <?php echo htmlspecialchars($success_msg); ?>
                 <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
         
-        <?php if(isset($error_msg)): ?>
-            <div class="alert alert-danger alert-dismissible fade show rounded-4 p-4 mb-4 shadow-sm border-0" role="alert">
-                <i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo $error_msg; ?>
+        <?php if (isset($error_msg)): ?>
+            <div class="alert alert-danger alert-dismissible fade show rounded-4 p-4 mb-4 shadow-sm border-0 no-print" role="alert">
+                <i class="fa-solid fa-triangle-exclamation me-2"></i> <?php echo htmlspecialchars($error_msg); ?>
                 <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
 
+        <!-- Filter & Report Criteria Card -->
+        <div class="card p-4 mb-4 no-print">
+            <form method="GET" action="" class="row g-3 align-items-end">
+                <div class="col-md-2">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Date From</label>
+                    <input type="date" name="date_from" class="form-control" value="<?php echo htmlspecialchars($date_from); ?>">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Date To</label>
+                    <input type="date" name="date_to" class="form-control" value="<?php echo htmlspecialchars($date_to); ?>">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Symptom Category</label>
+                    <select name="symptom_category" class="form-select">
+                        <option value="">All Categories</option>
+                        <?php
+                        $categories = ['Fever', 'Cough & Cold', 'Headache', 'Stomachache', 'Injury', 'Other'];
+                        foreach ($categories as $cat) {
+                            $sel = $filter_category === $cat ? 'selected' : '';
+                            echo "<option value=\"" . htmlspecialchars($cat) . "\" {$sel}>" . htmlspecialchars($cat) . "</option>";
+                        }
+                        ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Status</label>
+                    <select name="status" class="form-select">
+                        <option value="">All Statuses</option>
+                        <?php
+                        $statuses = ['Cleared', 'Under Observation', 'Excused to Rest at Home', 'Referred to Hospital / Clinic'];
+                        foreach ($statuses as $st) {
+                            $sel = $filter_status === $st ? 'selected' : '';
+                            echo "<option value=\"" . htmlspecialchars($st) . "\" {$sel}>" . htmlspecialchars($st) . "</option>";
+                        }
+                        ?>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small fw-bold text-muted text-uppercase">Search</label>
+                    <input type="text" name="q" class="form-control" value="<?php echo htmlspecialchars($filter_search); ?>" placeholder="Student or complaint...">
+                </div>
+                <div class="col-md-2 d-flex gap-2">
+                    <button type="submit" class="btn btn-primary rounded-pill px-3 py-2 fw-semibold flex-grow-1" style="background: linear-gradient(135deg, #6f42c1 0%, #4e73df 100%); border: none;">
+                        <i class="fa-solid fa-filter me-1"></i> Filter
+                    </button>
+                    <?php if ($has_active_filters): ?>
+                        <a href="index.php" class="btn btn-light rounded-pill px-3 py-2 fw-semibold" title="Reset Filters">
+                            <i class="fa-solid fa-rotate-left"></i>
+                        </a>
+                    <?php endif; ?>
+                </div>
+            </form>
+        </div>
+
         <!-- Consultations Data Table -->
         <div class="card p-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <span class="text-muted small fw-semibold">
+                    Showing <strong><?php echo count($consultations); ?></strong> consultation log<?php echo count($consultations) === 1 ? '' : 's'; ?>
+                    <?php if ($has_active_filters): ?>(Filtered Report View)<?php endif; ?>
+                </span>
+            </div>
+
             <div class="table-responsive">
                 <table class="table align-middle mb-0">
                     <thead>
@@ -240,20 +417,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                             <th>Action Taken</th>
                             <th>Status</th>
                             <?php if ($user_role === 'Admin' || $user_role === 'Nurse'): ?>
-                                <th class="text-end pe-4">Actions</th>
+                                <th class="text-end pe-4 no-print">Actions</th>
                             <?php endif; ?>
                         </tr>
                     </thead>
                     <tbody>
                         <?php
-                        $stmt = $pdo->query("
-                            SELECT c.*, s.first_name, s.last_name, s.grade_section 
-                            FROM consultations c
-                            JOIN students s ON c.student_id = s.student_id
-                            ORDER BY c.consultation_date DESC
-                        ");
-                        if ($stmt->rowCount() > 0) {
-                            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                        if ($query_error !== '') {
+                            $colspan = ($user_role === 'Admin' || $user_role === 'Nurse') ? 8 : 7;
+                            echo "<tr><td colspan='{$colspan}' class='text-center text-danger py-4'>" . htmlspecialchars($query_error) . "</td></tr>";
+                        } elseif (count($consultations) > 0) {
+                            foreach ($consultations as $row) {
                                 $date = date('M d, Y h:i A', strtotime($row['consultation_date']));
                                 
                                 $badgeClass = 'bg-secondary';
@@ -273,12 +447,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                                 echo "<td><span class='badge {$badgeClass} fw-semibold'>" . htmlspecialchars($row['status']) . "</span></td>";
                                 
                                 if ($user_role === 'Admin' || $user_role === 'Nurse') {
-                                    echo "<td class='text-end pe-4'>
+                                    echo "<td class='text-end pe-4 no-print'>
                                             <div class='d-flex justify-content-end gap-2'>
-                                                <a href='edit.php?id=" . $row['consultation_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Edit Consultation'>
+                                                <a href='edit.php?id=" . (int)$row['consultation_id'] . "' class='btn btn-sm btn-action-edit px-3 py-2' title='Edit Consultation'>
                                                     <i class='fa-solid fa-pen-to-square'></i>
                                                 </a>
-                                                <a href='delete.php?id=" . $row['consultation_id'] . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Consultation' onclick='return confirm(\"Are you sure you want to delete this consultation log?\");'>
+                                                <a href='delete.php?id=" . (int)$row['consultation_id'] . "' class='btn btn-sm btn-action-delete px-3 py-2' title='Delete Consultation' onclick='return confirm(\"Are you sure you want to delete this consultation log?\");'>
                                                     <i class='fa-solid fa-trash'></i>
                                                 </a>
                                             </div>
@@ -288,7 +462,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                             }
                         } else {
                             $colspan = ($user_role === 'Admin' || $user_role === 'Nurse') ? 8 : 7;
-                            echo "<tr><td colspan='{$colspan}' class='text-center py-5 text-muted'><i class='fa-solid fa-folder-open fa-3x mb-3 text-secondary opacity-25'></i><p class='mb-0 fw-medium'>No consultation logs found.</p></td></tr>";
+                            echo "<tr><td colspan='{$colspan}' class='text-center py-5 text-muted'><i class='fa-solid fa-folder-open fa-3x mb-3 text-secondary opacity-25'></i><p class='mb-0 fw-medium'>No matching consultation logs found.</p></td></tr>";
                         }
                         ?>
                     </tbody>
@@ -309,7 +483,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                 </div>
                 <form action="" method="POST">
                     <div class="modal-body p-4">
-                        <!-- Type-to-Search Student Input -->
                         <div class="mb-3">
                             <label class="form-label text-muted small fw-bold text-uppercase">Search & Select Student</label>
                             <input class="form-control" list="student_list" name="student_id" placeholder="Type student name or ID..." required>
@@ -317,7 +490,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                                 <?php
                                 $students = $pdo->query("SELECT student_id, first_name, last_name, grade_section FROM students ORDER BY last_name ASC");
                                 while($s = $students->fetch(PDO::FETCH_ASSOC)) {
-                                    echo "<option value='{$s['student_id']}'>{$s['last_name']}, {$s['first_name']} ({$s['grade_section']})</option>";
+                                    echo "<option value='" . htmlspecialchars($s['student_id']) . "'>" . htmlspecialchars($s['last_name'] . ", " . $s['first_name'] . " (" . $s['grade_section'] . ")") . "</option>";
                                 }
                                 ?>
                             </datalist>
@@ -345,7 +518,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                             <input type="text" name="action_taken" class="form-control" placeholder="e.g., Given Paracetamol 500mg, advised rest" required>
                         </div>
                         
-                        <!-- Type-to-Search Medicine Input using Datalist -->
                         <div class="row mb-3">
                             <div class="col-md-8">
                                 <label class="form-label text-muted small fw-bold text-uppercase">Dispense Medicine / Supply (Optional)</label>
@@ -354,7 +526,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
                                     <?php
                                     $inv_list = $pdo->query("SELECT item_id, item_name, current_stock FROM inventory ORDER BY item_name ASC");
                                     while($item = $inv_list->fetch(PDO::FETCH_ASSOC)) {
-                                        echo "<option value='{$item['item_id']}'>{$item['item_name']} (Stock: {$item['current_stock']})</option>";
+                                        echo "<option value='" . (int)$item['item_id'] . "'>" . htmlspecialchars($item['item_name']) . " (Stock: " . (int)$item['current_stock'] . ")</option>";
                                     }
                                     ?>
                                 </datalist>
@@ -385,7 +557,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['add_consultation'])) {
     </div>
     <?php endif; ?>
 
-    <!-- INJECT FOOTER -->
     <?php include '../../includes/footer.php'; ?>
 
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>

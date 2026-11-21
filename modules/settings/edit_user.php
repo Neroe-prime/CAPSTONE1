@@ -41,9 +41,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim($_POST['username'] ?? '');
     $role = trim($_POST['role'] ?? '');
     $new_password = $_POST['new_password'] ?? '';
+    $allowed_roles = ['Admin', 'Nurse'];
 
-    if (empty($username) || empty($role)) {
-        $error_msg = "Username and role are required.";
+    if (empty($username) || !in_array($role, $allowed_roles, true)) {
+        $error_msg = "Username and a valid role (Admin or Nurse) are required.";
     } else {
         try {
             if (!empty($new_password)) {
@@ -138,8 +139,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <i class="bi bi-bell fs-5 me-4 text-muted"></i>
                     <div class="d-flex align-items-center">
                         <div class="bg-primary text-white rounded-circle d-flex justify-content-center align-items-center me-2" style="width: 35px; height: 35px;">SY</div>
-                        <span class="fw-bold me-2">sysadmin</span>
-                        <span class="badge bg-secondary">Admin</span>
+                        <span class="fw-bold me-2"><?php echo htmlspecialchars($_SESSION['username'] ?? 'sysadmin'); ?></span>
+                        <span class="badge bg-secondary"><?php echo htmlspecialchars($_SESSION['role'] ?? 'Admin'); ?></span>
                     </div>
                 </div>
             </div>
@@ -171,7 +172,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <select class="form-select py-2" id="role" name="role" style="border-radius: 8px;" required>
                                         <option value="Admin" <?php if($target_user['role'] === 'Admin') echo 'selected'; ?>>Admin</option>
                                         <option value="Nurse" <?php if($target_user['role'] === 'Nurse') echo 'selected'; ?>>Nurse</option>
-                                        <option value="Teacher" <?php if($target_user['role'] === 'Teacher') echo 'selected'; ?>>Teacher</option>
                                     </select>
                                 </div>
 

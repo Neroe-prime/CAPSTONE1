@@ -10,6 +10,24 @@ if (!isset($_SESSION['user_id'])) {
 
 require_once '../../includes/db_connect.php';
 
+$performed_by = $_SESSION['username'] ?? 'Staff';
+try {
+    $u_stmt = $pdo->prepare("SELECT role, username FROM users WHERE user_id = ?");
+    $u_stmt->execute([$_SESSION['user_id']]);
+    $u_row = $u_stmt->fetch(PDO::FETCH_ASSOC);
+    $user_role = $u_row['role'] ?? ($_SESSION['role'] ?? 'Nurse');
+    if (!empty($u_row['username'])) {
+        $performed_by = $u_row['username'];
+    }
+} catch (PDOException $e) {
+    $user_role = $_SESSION['role'] ?? 'Nurse';
+}
+
+if ($user_role !== 'Admin' && $user_role !== 'Nurse') {
+    header("Location: index.php?error=Unauthorized action.");
+    exit();
+}
+
 $item_id = $_GET['id'] ?? null;
 if (!$item_id) {
     header("Location: index.php?error=Invalid item ID");
@@ -31,8 +49,8 @@ $error_msg = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $item_name = trim($_POST['item_name'] ?? '');
     $batch_number = trim($_POST['batch_number'] ?? '');
-    $initial_stock = intval($_POST['initial_stock'] ?? 0);
-    $current_stock = intval($_POST['current_stock'] ?? 0);
+    $initial_stock = max(0, intval($_POST['initial_stock'] ?? 0));
+    $current_stock = max(0, intval($_POST['current_stock'] ?? 0));
     $expiration_date = $_POST['expiration_date'] ?? null;
     $reorder_level = intval($_POST['reorder_level'] ?? 15); // Fixed policy value
     $daily_consumption = floatval($_POST['daily_consumption_rate'] ?? 0.00);
@@ -41,12 +59,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error_msg = "Item name, batch number, and expiration date are required.";
     } else {
         try {
+            $pdo->beginTransaction();
+
+            $lock_stmt = $pdo->prepare("SELECT current_stock FROM inventory WHERE item_id = ? FOR UPDATE");
+            $lock_stmt->execute([$item_id]);
+            $prev_stock = (int)$lock_stmt->fetchColumn();
+
             $update = $pdo->prepare("UPDATE inventory SET item_name = ?, batch_number = ?, initial_stock = ?, current_stock = ?, expiration_date = ?, reorder_level = ?, daily_consumption_rate = ? WHERE item_id = ?");
             $update->execute([$item_name, $batch_number, $initial_stock, $current_stock, $expiration_date, $reorder_level, $daily_consumption, $item_id]);
-            
+
+            if ($current_stock !== $prev_stock) {
+                $diff = abs($current_stock - $prev_stock);
+                $action_type = $current_stock > $prev_stock ? 'Restocked' : 'Adjusted';
+                $audit_stmt = $pdo->prepare("
+                    INSERT INTO inventory_audit 
+                        (item_id, item_name, action_type, quantity, previous_stock, new_stock, reason_or_remarks, performed_by) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $audit_stmt->execute([
+                    $item_id,
+                    $item_name,
+                    $action_type,
+                    $diff,
+                    $prev_stock,
+                    $current_stock,
+                    "Updated via Inventory Edit (Batch: {$batch_number})",
+                    $performed_by
+                ]);
+            }
+
+            $pdo->commit();
             header("Location: index.php?success=Inventory item updated successfully with fixed alert policy");
             exit();
         } catch (PDOException $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $error_msg = "Database error: " . $e->getMessage();
         }
     }

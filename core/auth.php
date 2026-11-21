@@ -1,4 +1,4 @@
-    <?php
+<?php
 session_start();
 require_once '../includes/db_connect.php'; // Pulls in your DB connection
 
@@ -11,8 +11,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $stmt->execute(['username' => $username]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    // Verify the password
-    if ($user && password_verify($password, $user['password_hash'])) {
+    // Verify the password and ensure role is Admin or Nurse
+    if ($user && password_verify($password, $user['password_hash']) && in_array($user['role'], ['Admin', 'Nurse'], true)) {
         // Success! Set session variables
         $_SESSION['user_id'] = $user['user_id'];
         $_SESSION['username'] = $user['username'];

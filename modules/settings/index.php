@@ -21,12 +21,12 @@ try {
     $stmt->execute([$_SESSION['user_id']]);
     $current_user = $stmt->fetch(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    $current_user = ['username' => 'Unknown', 'role' => 'Guest'];
+    $current_user = ['username' => 'Unknown', 'role' => 'Nurse'];
 }
 
 // Fetch all users if Admin wants to manage them
 $all_users = [];
-if ($current_user['role'] === 'Admin') {
+if (($current_user['role'] ?? '') === 'Admin') {
     try {
         $u_stmt = $pdo->query("SELECT user_id, username, role FROM users ORDER BY user_id DESC");
         $all_users = $u_stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -210,7 +210,7 @@ if ($current_user['role'] === 'Admin') {
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label text-muted small fw-bold text-uppercase">System Role</label>
                                         <input type="text" class="form-control bg-light fw-semibold" value="<?php echo htmlspecialchars($current_user['role']); ?>" readonly>
-                                        <div class="form-text mt-2 small"><i class="fa-solid fa-circle-info text-purple me-1" style="color: #6f42c1;"></i> You hold full administrator privileges.</div>
+                                        <div class="form-text mt-2 small"><i class="fa-solid fa-circle-info text-purple me-1" style="color: #6f42c1;"></i> You hold authorized clinic system privileges.</div>
                                     </div>
                                 </div>
                             </div>
@@ -262,7 +262,7 @@ if ($current_user['role'] === 'Admin') {
                                                 <td class="ps-3"><span class="badge bg-light text-dark border px-2 py-1">#<?php echo $u['user_id']; ?></span></td>
                                                 <td><strong class="text-dark"><?php echo htmlspecialchars($u['username']); ?></strong></td>
                                                 <td>
-                                                    <span class="badge <?php echo $u['role'] === 'Admin' ? 'bg-danger bg-opacity-10 text-danger border border-danger-subtle' : ($u['role'] === 'Nurse' ? 'bg-success bg-opacity-10 text-success border border-success-subtle' : 'bg-secondary bg-opacity-10 text-secondary border border-secondary-subtle'); ?> px-3 py-2 rounded-pill fw-semibold">
+                                                    <span class="badge <?php echo $u['role'] === 'Admin' ? 'bg-danger bg-opacity-10 text-danger border border-danger-subtle' : 'bg-success bg-opacity-10 text-success border border-success-subtle'; ?> px-3 py-2 rounded-pill fw-semibold">
                                                         <?php echo htmlspecialchars($u['role']); ?>
                                                     </span>
                                                 </td>
@@ -314,7 +314,6 @@ if ($current_user['role'] === 'Admin') {
                         <div class="mb-3">
                             <label class="form-label text-muted small fw-bold text-uppercase">Role</label>
                             <select name="new_role" class="form-select" required>
-                                <option value="Teacher">Teacher</option>
                                 <option value="Nurse">Nurse</option>
                                 <option value="Admin">Admin</option>
                             </select>
